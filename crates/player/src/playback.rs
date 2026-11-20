@@ -366,6 +366,8 @@ enum ReaderCommand {
         audio: Option<i32>,
         subtitle: Option<Option<i32>>,
     },
+    /// The subtitle files found next to the video, in the order of their track numbers.
+    Sidecars(Vec<String>),
 }
 
 /// News from the reading thread that is not a packet.
@@ -580,10 +582,6 @@ struct Reading {
     commands: Receiver<ReaderCommand>,
     video: Arc<PacketQueue>,
     news: Sender<FromReader>,
-    /// Subtitle files next to the video, in the order of their track numbers.
-    sidecars: Vec<String>,
-    /// The one of them to show from the start, if any.
-    sidecar: Option<String>,
     shared: Arc<Shared>,
 }
 
@@ -594,10 +592,12 @@ fn read_loop(mut source: Source, reading: Reading) {
         commands,
         video,
         news,
-        sidecars,
-        mut sidecar,
         shared,
     } = reading;
+    // Subtitle files next to the video, in the order of their track numbers (they are found
+    // a moment after playback starts), and the one of them being shown.
+    let mut sidecars: Vec<String> = Vec::new();
+    let mut sidecar: Option<String> = None;
     // The output device is opened here because its stream must stay on the thread that made it.
     let mut sound = None;
     if let Some(track) = source.audio_info().filter(|_| sound_wanted) {
@@ -623,13 +623,7 @@ fn read_loop(mut source: Source, reading: Reading) {
     let mut generation = 0u64;
     let mut start = 0.0f64;
     let mut idle = false; // at the end of the file, or after an error: wait for a seek
-    let mut subtitles = match &sidecar {
-        Some(path) => {
-            send_sidecar(path, generation, &news);
-            None
-        }
-        None => open_subtitles(&source, generation, &news),
-    };
+    let mut subtitles = open_subtitles(&source, generation, &news);
 
     loop {
         if shared.quit.load(Ordering::Relaxed) {
@@ -648,6 +642,10 @@ fn read_loop(mut source: Source, reading: Reading) {
                 Err(TryRecvError::Disconnected) => return,
             }
         };
+        if let Some(ReaderCommand::Sidecars(found)) = command {
+            sidecars = found;
+            continue;
+        }
         if let Some(ReaderCommand::Seek {
             to,
             generation: g,
@@ -862,39 +860,28 @@ fn render_loop(
     for (name, data) in source.fonts() {
         gpu.add_font(&name, &data);
     }
-    // Subtitle files next to the video join the list after the tracks inside it.
-    let sidecars = find_sidecars(&options.path);
-    for (n, (path, language)) in sidecars.iter().enumerate() {
-        let name = std::path::Path::new(path)
-            .file_name()
-            .map(|f| f.to_string_lossy().into_owned());
-        tracks.push(Track {
-            index: SIDECAR_BASE + n as i32,
-            kind: TrackKind::Subtitle,
-            codec: String::new(),
-            profile: String::new(),
-            language: language.clone(),
-            title: name.unwrap_or_default(),
-            layout: String::new(),
-            channels: 0,
-            sample_rate: 0,
-            is_default: false,
-            forced: false,
-            hearing_impaired: false,
-            bitmap: false,
-        });
+    // Subtitle files next to the video are looked for on the side: listing a folder can wait
+    // on the system asking the user for access to it, and the film should not wait with it.
+    let (found_tx, found_sidecars) = channel();
+    {
+        let path = options.path.clone();
+        thread::Builder::new()
+            .name("subtitle files".into())
+            .spawn(move || {
+                let _ = found_tx.send(find_sidecars(&path));
+            })
+            .expect("spawn the subtitle file search");
     }
-    let sidecars: Vec<String> = sidecars.into_iter().map(|(path, _)| path).collect();
     // Sound in the language asked for, when the file has it; otherwise as the file prefers.
     if let Some(track) = tracks.iter().find(|t| {
         t.kind == TrackKind::Audio && language::same(&t.language, &options.audio_language)
     }) {
         let _ = source.select_audio(track.index);
     }
-    // Subtitles on from the start, in order of preference: the language asked for (a file next
-    // to the video first, then a full track inside it); forced subtitles (signs, a line in
-    // another language), which are part of the film; a subtitle file someone put next to the
-    // video. Anything else waits to be asked for.
+    // Subtitles on from the start, in order of preference: a full track in the language asked
+    // for; forced subtitles (signs, a line in another language), which are part of the film.
+    // Anything else waits to be asked for. A subtitle file next to the video can still take
+    // over when the search for one comes back.
     let subtitle = |wanted: &dyn Fn(&Track) -> bool| {
         tracks
             .iter()
@@ -902,20 +889,14 @@ fn render_loop(
             .map(|t| t.index)
     };
     let in_language = |t: &Track| language::same(&t.language, &options.subtitle_language);
-    let mut subtitle_track = subtitle(&|t| in_language(t) && t.index >= SIDECAR_BASE)
-        .or_else(|| subtitle(&|t| in_language(t) && !t.forced && !t.hearing_impaired))
+    let mut subtitle_track = subtitle(&|t| in_language(t) && !t.forced && !t.hearing_impaired)
         .or_else(|| subtitle(&|t| in_language(t)))
-        .or_else(|| subtitle(&|t| t.forced))
-        .or_else(|| subtitle(&|t| t.index >= SIDECAR_BASE));
-    if let Some(index) = subtitle_track
-        && index < SIDECAR_BASE
-        && source.select_subtitle(Some(index)).is_err()
-    {
+        .or_else(|| subtitle(&|t| t.forced));
+    let chosen_by_language =
+        subtitle_track.is_some_and(|i| tracks.iter().any(|t| t.index == i && in_language(t)));
+    if subtitle_track.is_some() && source.select_subtitle(subtitle_track).is_err() {
         subtitle_track = None;
     }
-    let first_sidecar = subtitle_track
-        .filter(|&i| i >= SIDECAR_BASE)
-        .and_then(|i| sidecars.get((i - SIDECAR_BASE) as usize).cloned());
     let mut audio_track = source.audio_index().filter(|_| options.sound);
 
     let shared = Arc::new(Shared {
@@ -941,8 +922,6 @@ fn render_loop(
                         commands: reader_rx,
                         video: packets,
                         news: news_tx,
-                        sidecars,
-                        sidecar: first_sidecar,
                         shared,
                     },
                 )
@@ -982,7 +961,12 @@ fn render_loop(
     let mut stats = RenderStats::default();
     let mut failures = 0u32;
     let mut result = Ok(());
-    let mut pending_seek = (options.start > 0.0).then_some(options.start);
+    // Commands the loop gives itself: the starting position, a subtitle file that turned up.
+    let mut pending: VecDeque<Command> = VecDeque::new();
+    if options.start > 0.0 {
+        pending.push_back(Command::SeekBy(options.start));
+    }
+    let mut sidecars_known = false;
     // Subtitles glide out of the controls' way rather than jump.
     let mut lift_wanted = options.subtitle_lift;
     let mut lift = options.subtitle_lift;
@@ -991,8 +975,8 @@ fn render_loop(
 
     'playing: loop {
         loop {
-            let command = match pending_seek.take() {
-                Some(delta) => Ok(Command::SeekBy(delta)),
+            let command = match pending.pop_front() {
+                Some(command) => Ok(command),
                 None => commands.try_recv(),
             };
             // Where to go next, with the track changes to make on the way.
@@ -1093,6 +1077,42 @@ fn render_loop(
         if (lift - lift_wanted).abs() > 0.5 {
             lift += (lift_wanted - lift) * 0.18;
             gpu.set_subtitle_lift(lift);
+        }
+        // The search for subtitle files next to the video has come back.
+        if !sidecars_known && let Ok(found) = found_sidecars.try_recv() {
+            sidecars_known = true;
+            for (n, (path, language)) in found.iter().enumerate() {
+                let name = std::path::Path::new(path)
+                    .file_name()
+                    .map(|f| f.to_string_lossy().into_owned());
+                tracks.push(Track {
+                    index: SIDECAR_BASE + n as i32,
+                    kind: TrackKind::Subtitle,
+                    codec: String::new(),
+                    profile: String::new(),
+                    language: language.clone(),
+                    title: name.unwrap_or_default(),
+                    layout: String::new(),
+                    channels: 0,
+                    sample_rate: 0,
+                    is_default: false,
+                    forced: false,
+                    hearing_impaired: false,
+                    bitmap: false,
+                });
+            }
+            let _ = reader_commands.send(ReaderCommand::Sidecars(
+                found.iter().map(|(p, _)| p.clone()).collect(),
+            ));
+            // A file someone put next to the video is shown without being asked for, unless a
+            // track in the preferred language is already on and this file is not in it.
+            let wanted = found
+                .iter()
+                .position(|(_, l)| language::same(l, &options.subtitle_language))
+                .or((!chosen_by_language && !found.is_empty()).then_some(0));
+            if let Some(n) = wanted {
+                pending.push_back(Command::SelectSubtitle(Some(SIDECAR_BASE + n as i32)));
+            }
         }
         // Subtitles and track changes from the reading thread.
         while let Ok(item) = news.try_recv() {
@@ -1223,7 +1243,7 @@ fn render_loop(
         if s.sound != sound {
             s.sound = sound.clone();
         }
-        if s.tracks.is_empty() && !tracks.is_empty() {
+        if s.tracks.len() != tracks.len() {
             s.tracks = tracks.clone();
         }
         s.audio_track = audio_track;
