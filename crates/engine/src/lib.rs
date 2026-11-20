@@ -52,6 +52,44 @@ extern "C" fn log_to_stderr(_user: *mut c_void, level: c_int, message: *const c_
     eprintln!("[{tag}] {}", message.trim_end());
 }
 
+static LOG_FILE: std::sync::Mutex<Option<std::fs::File>> = std::sync::Mutex::new(None);
+
+extern "C" fn log_to_file(_user: *mut c_void, level: c_int, message: *const c_char) {
+    use std::io::Write;
+    // SAFETY: the C side passes a NUL-terminated string valid for this call.
+    let message = unsafe { CStr::from_ptr(message) }.to_string_lossy();
+    let tag = match level {
+        1 => "error",
+        2 => "warn",
+        3 => "info",
+        _ => "debug",
+    };
+    if let Ok(mut file) = LOG_FILE.lock()
+        && let Some(file) = file.as_mut()
+    {
+        let _ = writeln!(file, "[{tag}] {}", message.trim_end());
+    }
+}
+
+/// Send FFmpeg's and libplacebo's messages to a file, up to `level`: for a program with no
+/// console to print to. The file is started afresh.
+pub fn log_to_file_up_to(path: &std::path::Path, level: LogLevel) -> std::io::Result<()> {
+    *LOG_FILE.lock().unwrap() = Some(std::fs::File::create(path)?);
+    // SAFETY: the callback is a plain function that lives for the whole program.
+    unsafe { ffi::bsv_set_log(Some(log_to_file), std::ptr::null_mut(), level as c_int) };
+    Ok(())
+}
+
+/// Add a line of the caller's own to the log file, if there is one.
+pub fn log_line(text: &str) {
+    use std::io::Write;
+    if let Ok(mut file) = LOG_FILE.lock()
+        && let Some(file) = file.as_mut()
+    {
+        let _ = writeln!(file, "{text}");
+    }
+}
+
 /// Send FFmpeg's and libplacebo's messages to stderr, up to `level`.
 pub fn log_to_stderr_up_to(level: LogLevel) {
     // SAFETY: the callback is a plain function that lives for the whole program.
@@ -833,6 +871,35 @@ impl Gpu {
         NonNull::new(ptr)
             .map(|ptr| Gpu { ptr })
             .ok_or_else(|| Error(text(&error)))
+    }
+
+    /// Render into a swapchain that belongs to no window, for an application that composes
+    /// its own (WinUI). Returns the gpu and the swapchain (an `IDXGISwapChain1*`) for the
+    /// application to put into one of its panels; the gpu owns it.
+    #[cfg(windows)]
+    pub fn for_composition(width: u32, height: u32) -> Result<(Gpu, *mut c_void), Error> {
+        let mut error = [0 as c_char; 256];
+        let mut swapchain = std::ptr::null_mut();
+        // SAFETY: both out-pointers are valid for the call.
+        let ptr = unsafe {
+            ffi::bsv_gpu_create_composition(
+                width as c_int,
+                height as c_int,
+                &mut swapchain,
+                error.as_mut_ptr(),
+                error.len() as c_int,
+            )
+        };
+        NonNull::new(ptr)
+            .map(|ptr| (Gpu { ptr }, swapchain))
+            .ok_or_else(|| Error(text(&error)))
+    }
+
+    /// How many pixels one unit of the application's panel is (its display scaling).
+    #[cfg(windows)]
+    pub fn set_scale(&mut self, scale: f32) {
+        // SAFETY: plain call on an owned gpu.
+        unsafe { ffi::bsv_gpu_set_scale(self.ptr.as_ptr(), scale) };
     }
 
     /// Render into a `CAMetalLayer`.

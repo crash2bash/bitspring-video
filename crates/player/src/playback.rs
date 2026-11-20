@@ -67,6 +67,8 @@ pub struct Options {
 pub enum Command {
     Quit,
     Resize(u32, u32),
+    /// Pixels per unit of the application's panel (Windows, composed into an application).
+    Scale(f32),
     TogglePause,
     SeekBy(f64),
     SeekTo(f64),
@@ -133,6 +135,16 @@ struct LayerPtr(*mut c_void);
 // SAFETY: the layer is only used by the render thread; `Player::start`'s caller keeps it alive.
 unsafe impl Send for LayerPtr {}
 
+/// Where the picture is drawn.
+enum Target {
+    /// A `CAMetalLayer` (the Mac) or a window handle (Windows).
+    Surface(LayerPtr),
+    /// A swapchain of the renderer's own making, for an application that composes its own
+    /// window. `adopt` is called with it (an `IDXGISwapChain1*`, as an address) once it exists.
+    #[cfg(windows)]
+    Composition(Box<dyn FnOnce(usize) + Send>),
+}
+
 impl Player {
     /// Start playing into a `CAMetalLayer` (the Mac) or a window, by its handle (Windows).
     ///
@@ -144,6 +156,22 @@ impl Player {
         display: Display,
         options: Options,
     ) -> Player {
+        Player::spawn(Target::Surface(LayerPtr(layer)), size, display, options)
+    }
+
+    /// Start playing into a swapchain that the player makes and the application shows:
+    /// `adopt` receives it (an `IDXGISwapChain1*`, as an address) from the render thread.
+    #[cfg(windows)]
+    pub fn start_composed(
+        size: (u32, u32),
+        display: Display,
+        options: Options,
+        adopt: impl FnOnce(usize) + Send + 'static,
+    ) -> Player {
+        Player::spawn(Target::Composition(Box::new(adopt)), size, display, options)
+    }
+
+    fn spawn(target: Target, size: (u32, u32), display: Display, options: Options) -> Player {
         let (commands, rx) = channel();
         let status = Arc::new(Mutex::new(Status {
             mode: options.mode,
@@ -152,12 +180,10 @@ impl Player {
             ..Status::default()
         }));
         let shared = status.clone();
-        let layer = LayerPtr(layer);
         let thread = thread::Builder::new()
             .name("render".into())
             .spawn(move || {
-                let layer = layer;
-                if let Err(e) = render_loop(layer.0, size, display, options, rx, &shared) {
+                if let Err(e) = render_loop(target, size, display, options, rx, &shared) {
                     shared.lock().unwrap().error = Some(e.to_string());
                 }
             })
@@ -836,18 +862,26 @@ fn gain_for(volume: f32, muted: bool) -> f32 {
 }
 
 fn render_loop(
-    layer: *mut c_void,
+    target: Target,
     size: (u32, u32),
     mut display: Display,
     options: Options,
     commands: Receiver<Command>,
     status: &Mutex<Status>,
 ) -> Result<(), bsv_engine::Error> {
-    // SAFETY: `Player::start`'s caller keeps the layer (or window) alive until this thread is joined.
-    #[cfg(target_os = "macos")]
-    let mut gpu = unsafe { Gpu::for_metal_layer(layer) }?;
-    #[cfg(windows)]
-    let mut gpu = unsafe { Gpu::for_window(layer) }?;
+    let mut gpu = match target {
+        // SAFETY: `Player::start`'s caller keeps the layer (or window) alive until this thread is joined.
+        #[cfg(target_os = "macos")]
+        Target::Surface(layer) => unsafe { Gpu::for_metal_layer(layer.0) }?,
+        #[cfg(windows)]
+        Target::Surface(window) => unsafe { Gpu::for_window(window.0) }?,
+        #[cfg(windows)]
+        Target::Composition(adopt) => {
+            let (gpu, swapchain) = Gpu::for_composition(size.0, size.1)?;
+            adopt(swapchain as usize);
+            gpu
+        }
+    };
     gpu.set_options(options.quality, &options.renderer_options)?;
     gpu.resize(size.0, size.1);
 
@@ -987,6 +1021,10 @@ fn render_loop(
             match command {
                 Ok(Command::Quit) | Err(TryRecvError::Disconnected) => break 'playing,
                 Ok(Command::Resize(w, h)) => gpu.resize(w, h),
+                #[cfg(windows)]
+                Ok(Command::Scale(scale)) => gpu.set_scale(scale),
+                #[cfg(not(windows))]
+                Ok(Command::Scale(_)) => {}
                 Ok(Command::TogglePause) => {
                     paused = !paused;
                     if paused {

@@ -68,7 +68,8 @@ pub enum Request {
     ExitFullscreen,
 }
 
-fn parse(text: &str) -> Option<Request> {
+/// Read one command as the interface writes it: "toggle-pause", "seek-to 12.5", "open <path>".
+pub fn parse(text: &str) -> Option<Request> {
     let (name, argument) = text.split_once(' ').unwrap_or((text, ""));
     let number = || argument.trim().parse::<f64>().ok();
     Some(match name {

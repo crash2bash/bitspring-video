@@ -9,19 +9,9 @@ use std::process::ExitCode;
 use bsv_display::policy::{HdrMode, plan};
 use bsv_engine::{Decoded, LogLevel, Quality, Read, Source, VideoDecoder};
 
-// Playback exists where there is a renderer for the system: the Mac and Windows.
 #[cfg(any(target_os = "macos", windows))]
-mod app;
-mod language;
-mod launch;
-#[cfg(any(target_os = "macos", windows))]
-mod playback;
-mod prefs;
-mod report;
-#[cfg(any(target_os = "macos", windows))]
-mod surface;
-#[cfg(any(target_os = "macos", windows))]
-mod ui;
+use bitspring_video::app;
+use bitspring_video::{launch, prefs, report};
 
 const USAGE: &str = "\
 BitSpring Video

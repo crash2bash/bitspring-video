@@ -1,0 +1,209 @@
+<Window
+    x:Class="BitSpringVideo.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- The picture fills the window; the controls are pieces of acrylic floating over it:
+           top left      the file's name; opens another file
+           top right     settings, and the signal lens with its panel
+           bottom        transport: play, time, seek, volume, tracks, full screen
+         Panels and menus are built in MainWindow.xaml.cs, where their content comes from. -->
+    <Grid
+        x:Name="Root"
+        Background="Black"
+        AllowDrop="True"
+        DragOver="OnDragOver"
+        Drop="OnDrop"
+        PointerMoved="OnPointerMoved"
+        DoubleTapped="OnDoubleTapped"
+        KeyboardAcceleratorPlacementMode="Hidden">
+
+        <Grid.Resources>
+            <!-- A button that is only its glyph or words, on the glass. -->
+            <Style x:Key="OnGlass" TargetType="Button" BasedOn="{StaticResource DefaultButtonStyle}">
+                <Setter Property="Background" Value="Transparent" />
+                <Setter Property="BorderThickness" Value="0" />
+                <Setter Property="Foreground" Value="{StaticResource PorcelainBrush}" />
+                <Setter Property="Padding" Value="8,6" />
+                <Setter Property="VerticalAlignment" Value="Center" />
+                <!-- Keys belong to the player (space pauses, arrows seek), not to whichever
+                     button was clicked last. -->
+                <Setter Property="IsTabStop" Value="False" />
+            </Style>
+        </Grid.Resources>
+
+        <SwapChainPanel x:Name="Video" />
+
+        <!-- Nothing open -->
+        <StackPanel x:Name="Empty" HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="12" MaxWidth="480">
+            <TextBlock
+                x:Name="EmptyTitle"
+                FontSize="30"
+                FontWeight="SemiBold"
+                HorizontalAlignment="Center"
+                Foreground="{StaticResource PorcelainBrush}" />
+            <TextBlock
+                x:Name="EmptyDisplay"
+                FontSize="14"
+                TextWrapping="Wrap"
+                TextAlignment="Center"
+                HorizontalAlignment="Center"
+                Foreground="{StaticResource QuietBrush}" />
+            <TextBlock
+                x:Name="EmptyError"
+                FontSize="13"
+                TextWrapping="Wrap"
+                TextAlignment="Center"
+                HorizontalAlignment="Center"
+                Visibility="Collapsed"
+                Foreground="{StaticResource AlarmBrush}" />
+            <Button
+                x:Name="OpenButton"
+                Click="OnOpenClick"
+                HorizontalAlignment="Center"
+                Margin="0,8,0,0"
+                Padding="20,8"
+                CornerRadius="19"
+                IsTabStop="False" />
+        </StackPanel>
+
+        <!-- The strip the window is dragged by. The system draws its own buttons at its right end. -->
+        <Grid x:Name="DragRegion" Height="32" VerticalAlignment="Top" Background="Transparent" />
+
+        <!-- Settings stay within reach when nothing is open. -->
+        <Border
+            x:Name="SettingsPill"
+            HorizontalAlignment="Right"
+            VerticalAlignment="Top"
+            Margin="0,40,20,0"
+            Width="36"
+            Height="36"
+            CornerRadius="18"
+            Background="{StaticResource GlassBrush}">
+            <Button x:Name="SettingsButton" Style="{StaticResource OnGlass}" HorizontalAlignment="Center" Padding="8">
+                <FontIcon Glyph="&#xE713;" FontSize="15" />
+            </Button>
+        </Border>
+
+        <Grid x:Name="Chrome" Visibility="Collapsed">
+            <Border
+                x:Name="TitlePill"
+                HorizontalAlignment="Left"
+                VerticalAlignment="Top"
+                Margin="20,40,0,0"
+                Height="36"
+                CornerRadius="18"
+                Background="{StaticResource GlassBrush}">
+                <Button x:Name="TitleButton" Style="{StaticResource OnGlass}" Click="OnOpenClick" Padding="14,6">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <FontIcon Glyph="&#xE8B7;" FontSize="14" />
+                        <TextBlock x:Name="TitleText" FontSize="13" MaxWidth="380" TextTrimming="CharacterEllipsis" />
+                    </StackPanel>
+                </Button>
+            </Border>
+
+            <Border
+                x:Name="SignalPill"
+                HorizontalAlignment="Right"
+                VerticalAlignment="Top"
+                Margin="0,40,66,0"
+                Height="36"
+                CornerRadius="18"
+                Visibility="Collapsed"
+                Background="{StaticResource GlassBrush}">
+                <Button x:Name="SignalButton" Style="{StaticResource OnGlass}" Padding="14,6">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Ellipse x:Name="SignalDot" Width="8" Height="8" VerticalAlignment="Center" />
+                        <TextBlock x:Name="SignalFormat" FontSize="13" FontWeight="SemiBold" />
+                        <TextBlock x:Name="SignalTreatment" FontSize="13" Foreground="{StaticResource QuietBrush}" />
+                    </StackPanel>
+                </Button>
+            </Border>
+
+            <Border
+                x:Name="Transport"
+                VerticalAlignment="Bottom"
+                MaxWidth="820"
+                Height="56"
+                Margin="24,0,24,22"
+                Padding="9,0,10,0"
+                CornerRadius="28"
+                Background="{StaticResource GlassBrush}">
+                <Grid ColumnSpacing="8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <!-- The one filled shape in the interface: the key takes the signal's colour. -->
+                    <Button
+                        x:Name="PlayButton"
+                        Grid.Column="0"
+                        Click="OnPlayClick"
+                        Width="38"
+                        Height="38"
+                        Padding="0"
+                        CornerRadius="19"
+                        BorderThickness="0"
+                        IsTabStop="False"
+                        VerticalAlignment="Center">
+                        <FontIcon x:Name="PlayGlyph" Glyph="&#xE769;" FontSize="15" />
+                    </Button>
+                    <TextBlock
+                        x:Name="Elapsed"
+                        Grid.Column="1"
+                        MinWidth="44"
+                        FontSize="15"
+                        TextAlignment="Right"
+                        VerticalAlignment="Center"
+                        Margin="4,0,0,0"
+                        Foreground="{StaticResource PorcelainBrush}" />
+                    <Slider
+                        x:Name="Seek"
+                        Grid.Column="2"
+                        Minimum="0"
+                        Maximum="1"
+                        StepFrequency="0.001"
+                        SmallChange="0.001"
+                        VerticalAlignment="Center"
+                        Margin="4,0,4,0"
+                        IsTabStop="False"
+                        ValueChanged="OnSeekChanged" />
+                    <Button x:Name="DurationButton" Grid.Column="3" Style="{StaticResource OnGlass}" Click="OnDurationClick" Padding="4,6">
+                        <TextBlock x:Name="DurationText" MinWidth="44" FontSize="15" Foreground="{StaticResource QuietBrush}" />
+                    </Button>
+                    <Button x:Name="MuteButton" Grid.Column="4" Style="{StaticResource OnGlass}" Click="OnMuteClick">
+                        <FontIcon x:Name="MuteGlyph" Glyph="&#xE767;" FontSize="15" />
+                    </Button>
+                    <Slider
+                        x:Name="Volume"
+                        Grid.Column="5"
+                        Width="72"
+                        Minimum="0"
+                        Maximum="1"
+                        StepFrequency="0.01"
+                        VerticalAlignment="Center"
+                        IsTabStop="False"
+                        IsThumbToolTipEnabled="False"
+                        ValueChanged="OnVolumeChanged" />
+                    <Button x:Name="SubtitlesButton" Grid.Column="6" Style="{StaticResource OnGlass}">
+                        <FontIcon x:Name="SubtitlesGlyph" Glyph="&#xE7F0;" FontSize="15" />
+                    </Button>
+                    <Button x:Name="SoundButton" Grid.Column="7" Style="{StaticResource OnGlass}">
+                        <FontIcon Glyph="&#xE8D6;" FontSize="15" />
+                    </Button>
+                    <Button x:Name="FullscreenButton" Grid.Column="8" Style="{StaticResource OnGlass}" Click="OnFullscreenClick">
+                        <FontIcon x:Name="FullscreenGlyph" Glyph="&#xE740;" FontSize="14" />
+                    </Button>
+                </Grid>
+            </Border>
+        </Grid>
+    </Grid>
+</Window>

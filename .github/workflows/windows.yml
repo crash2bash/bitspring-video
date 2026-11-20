@@ -1,8 +1,14 @@
-# Builds the player for Windows and checks that it starts and shows a frame.
+# Builds the player for Windows and checks that it starts and shows a picture.
+#
+#   core      the player itself, built in MSYS2: bitspring_video_core.dll and the libraries
+#             it needs, plus bitspring-video.exe, the same player in a bare window
+#   app       the Windows application (WinUI 3) that draws the controls and loads the core
+#   assemble  both in one folder, started, and photographed
 #
 # The machine this runs on has no graphics card and no HDR display: what is proved here is
-# that the program builds, decodes and draws through Direct3D 11 (in software). HDR output
-# itself can only be judged on a real Windows machine with an HDR screen.
+# that everything builds, decodes and draws through Direct3D 11 (in software), and that the
+# controls come up. HDR output itself can only be judged on a real Windows machine with an
+# HDR screen.
 name: Windows
 
 on:
@@ -10,6 +16,7 @@ on:
     branches: [main]
     paths:
       - "crates/**"
+      - "windows/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - "scripts/package-windows.sh"
@@ -21,7 +28,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
+  core:
     runs-on: windows-latest
     timeout-minutes: 45
     defaults:
@@ -49,7 +56,7 @@ jobs:
           pkg-config --modversion libplacebo libavcodec libass
 
       - name: Build
-        run: cargo build --release -p bitspring-video
+        run: cargo build --release -p bitspring-video -p bsv-winhost
 
       - name: Tests
         run: cargo test --release --workspace
@@ -57,39 +64,154 @@ jobs:
       - name: Package
         run: scripts/package-windows.sh
 
-      - name: Start it and show a frame
+      - name: A clip to try it on
         run: |
-          cd target/bundle/BitSpring-Video-windows
-          # A short clip tagged HDR10, with sound and a subtitle track.
-          printf '1\n00:00:00,200 --> 00:00:04,000\nA subtitle.\n\n' > clip.srt
+          # Tagged HDR10, with sound and a subtitle track.
+          mkdir -p target/clip
+          cd target/clip
+          printf '1\n00:00:00,200 --> 00:00:30,000\nA subtitle.\n\n' > clip.srt
           ffmpeg -hide_banner -loglevel error -y \
-            -f lavfi -i "testsrc2=size=1280x720:rate=24:duration=4" \
-            -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=4" \
+            -f lavfi -i "testsrc2=size=1280x720:rate=24:duration=30" \
+            -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=30" \
             -i clip.srt -map 0:v -map 1:a -map 2:s \
             -vf "format=yuv420p10le" -c:v libx265 -preset ultrafast \
             -x265-params "log-level=error:hdr-opt=1:repeat-headers=1:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc:master-display=G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,50):max-cll=1000,400" \
-            -c:a aac -c:s srt clip.mkv
+            -c:a aac -c:s srt -metadata:s:a:0 language=eng -metadata:s:s:0 language=eng clip.mkv
+          rm clip.srt
+
+      - name: Start the bare player and show a frame
+        run: |
+          cd target/bundle/BitSpring-Video-windows
 
           echo "::group::Displays"
           ./bitspring-video.exe --displays || echo "(no display described on this machine)"
           echo "::endgroup::"
 
           echo "::group::The file"
-          ./bitspring-video.exe --info clip.mkv
+          ./bitspring-video.exe --info ../../clip/clip.mkv
           echo "::endgroup::"
 
           echo "::group::Playing for five seconds"
           timeout 120 ./bitspring-video.exe --verbose --no-sound --settings settings.json \
-            --script "1:subs 2,5:quit" clip.mkv 2>&1 | tee run.log
+            --script "1:subs 2,5:quit" ../../clip/clip.mkv 2>&1 | tee run.log
           echo "::endgroup::"
 
           # A "Signal" line is printed once a frame has gone through the renderer to the window.
           grep -E '^(Video|Signal|Clock)' run.log
           grep -q '^Signal:' run.log
-          rm -f clip.srt clip.mkv run.log settings.json
+          rm -f run.log settings.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: core
+          path: target/bundle/BitSpring-Video-windows
+          retention-days: 1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: clip
+          path: target/clip
+          retention-days: 1
+
+  app:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Build
+        run: dotnet build windows/BitSpringVideo/BitSpringVideo.csproj -c Release -p:Platform=x64 -o app-out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app
+          path: app-out
+          retention-days: 1
+
+  assemble:
+    needs: [core, app]
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: app
+          path: BitSpring-Video-windows
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: core
+          path: core
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: clip
+          path: clip
+
+      - name: One folder
+        run: |
+          # The application and the core each bring libraries; none may shadow another.
+          $clash = Get-ChildItem core -File | Where-Object { Test-Path (Join-Path BitSpring-Video-windows $_.Name) }
+          if ($clash) { throw "In both halves: $($clash.Name -join ', ')" }
+          Copy-Item core\* BitSpring-Video-windows -Recurse
+          "{0} files, {1:N0} MB" -f (Get-ChildItem BitSpring-Video-windows -Recurse -File).Count,
+            ((Get-ChildItem BitSpring-Video-windows -Recurse -File | Measure-Object Length -Sum).Sum / 1MB)
+
+      - name: Start the application and photograph it
+        run: |
+          try { Set-DisplayResolution -Width 1920 -Height 1080 -Force | Out-Null } catch { "The screen stays as it is: $_" }
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          New-Item -ItemType Directory shots | Out-Null
+          $here = (Get-Location).Path
+          $clip = "$here\clip\clip.mkv"
+          # The machine draws in software: the quickest rendering keeps the picture moving.
+          '{"quality":"fast"}' | Set-Content "$here\shots\settings.json"
+
+          function Photograph($name, $seconds, $arguments) {
+            $log = "$here\shots\$name.log"
+            $all = $arguments + @("--no-sound", "--pin", "--settings", "$here\shots\settings.json", "--log", $log)
+            $app = Start-Process "$here\BitSpring-Video-windows\BitSpringVideo.exe" -ArgumentList $all -PassThru
+            Start-Sleep -Seconds $seconds
+            $screen = [System.Windows.Forms.SystemInformation]::VirtualScreen
+            $picture = New-Object System.Drawing.Bitmap $screen.Width, $screen.Height
+            $graphics = [System.Drawing.Graphics]::FromImage($picture)
+            $graphics.CopyFromScreen($screen.Left, $screen.Top, 0, 0, $picture.Size)
+            $picture.Save("$here\shots\$name.png")
+            $alive = -not $app.HasExited
+            if ($alive) { Stop-Process -Id $app.Id -Force; Start-Sleep -Seconds 1 }
+            "::group::$name"
+            if (Test-Path $log) { Get-Content $log }
+            if (Test-Path "$log.crash.txt") { Get-Content "$log.crash.txt" }
+            "::endgroup::"
+            if (-not $alive) { throw "$name`: the application had stopped by itself" }
+          }
+
+          Photograph "1-nothing-open" 8 @()
+          Photograph "2-playing" 14 @($clip)
+          Photograph "3-signal" 14 @($clip, "--show", "signal")
+          Photograph "4-settings" 14 @($clip, "--show", "settings")
+
+          # A "Signal" line is written once a frame has gone through the renderer to the panel.
+          if (-not (Select-String -Path "$here\shots\2-playing.log" -Pattern '^Signal:' -Quiet)) {
+            throw "No picture reached the panel"
+          }
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screenshots
+          path: shots
+          retention-days: 14
 
       - uses: actions/upload-artifact@v4
         with:
           name: BitSpring-Video-windows
-          path: target/bundle/BitSpring-Video-windows
+          path: BitSpring-Video-windows
           retention-days: 14

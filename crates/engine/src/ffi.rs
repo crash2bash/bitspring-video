@@ -229,6 +229,16 @@ unsafe extern "C" {
         error: *mut c_char,
         error_len: c_int,
     ) -> *mut bsv_gpu;
+    #[cfg(windows)]
+    pub fn bsv_gpu_create_composition(
+        width: c_int,
+        height: c_int,
+        swapchain: *mut *mut c_void,
+        error: *mut c_char,
+        error_len: c_int,
+    ) -> *mut bsv_gpu;
+    #[cfg(windows)]
+    pub fn bsv_gpu_set_scale(g: *mut bsv_gpu, scale: c_float);
     pub fn bsv_gpu_destroy(g: *mut bsv_gpu);
     pub fn bsv_gpu_resize(g: *mut bsv_gpu, width: c_int, height: c_int);
     pub fn bsv_gpu_set_options(g: *mut bsv_gpu, preset: c_int, options: *const c_char) -> c_int;

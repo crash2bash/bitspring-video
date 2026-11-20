@@ -4,3 +4,7 @@
 /testdata/*.mkv
 /testdata/*.mp4
 /testdata/*.mov
+
+# The Windows application's build output
+/windows/**/bin/
+/windows/**/obj/

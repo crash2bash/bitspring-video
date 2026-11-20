@@ -198,6 +198,11 @@ struct bsv_render_stats {
 //   hwnd:  a window handle, HWND   (Windows)
 bsv_gpu *bsv_gpu_create_metal(void *layer, char *error, int error_len);
 bsv_gpu *bsv_gpu_create_win32(void *hwnd, char *error, int error_len);
+// Windows, for an application that composes its own window: `*swapchain` receives an
+// IDXGISwapChain1* to put into one of its panels. bsv_gpu_set_scale says how many pixels one
+// of the panel's units is.
+bsv_gpu *bsv_gpu_create_composition(int width, int height, void **swapchain, char *error, int error_len);
+void bsv_gpu_set_scale(bsv_gpu *g, float scale);
 void bsv_gpu_destroy(bsv_gpu *g);
 void bsv_gpu_resize(bsv_gpu *g, int width, int height);
 

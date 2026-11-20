@@ -1,0 +1,49 @@
+<Application
+    x:Class="BitSpringVideo.App"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    RequestedTheme="Dark">
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
+            </ResourceDictionary.MergedDictionaries>
+
+            <!-- The palette shared with the Mac's interface and the BitSpring audio player.
+                 Brass and violet mean the signal and nothing else: brass when the picture
+                 reaches the screen as it was mastered, violet when it is being changed to fit
+                 the display. Everything you can press is porcelain. -->
+            <Color x:Key="Porcelain">#FFE8EDEA</Color>
+            <Color x:Key="Brass">#FFC9A45C</Color>
+            <Color x:Key="Violet">#FF8C7AE6</Color>
+            <Color x:Key="Alarm">#FFE5625E</Color>
+            <Color x:Key="Slate">#FF121D23</Color>
+            <!-- Windows paints switches, selections and highlights in the system's accent colour
+                 (blue unless the user changed it). Here that would be a second meaning for
+                 colour, so the accent is porcelain. -->
+            <Color x:Key="SystemAccentColor">#FFE8EDEA</Color>
+            <Color x:Key="SystemAccentColorLight1">#FFE8EDEA</Color>
+            <Color x:Key="SystemAccentColorLight2">#FFE8EDEA</Color>
+            <Color x:Key="SystemAccentColorLight3">#FFF4F7F5</Color>
+            <Color x:Key="SystemAccentColorDark1">#FFC9D2CD</Color>
+            <Color x:Key="SystemAccentColorDark2">#FFAAB6B0</Color>
+            <Color x:Key="SystemAccentColorDark3">#FF8B9A93</Color>
+
+            <SolidColorBrush x:Key="PorcelainBrush" Color="{StaticResource Porcelain}" />
+            <SolidColorBrush x:Key="QuietBrush" Color="{StaticResource Porcelain}" Opacity="0.66" />
+            <SolidColorBrush x:Key="BrassBrush" Color="{StaticResource Brass}" />
+            <SolidColorBrush x:Key="VioletBrush" Color="{StaticResource Violet}" />
+            <SolidColorBrush x:Key="AlarmBrush" Color="{StaticResource Alarm}" />
+            <SolidColorBrush x:Key="SlateBrush" Color="{StaticResource Slate}" />
+
+            <!-- The glass: the system's acrylic, toned towards slate so that porcelain text
+                 stays readable over the brightest highlights. -->
+            <AcrylicBrush
+                x:Key="GlassBrush"
+                TintColor="{StaticResource Slate}"
+                TintOpacity="0.45"
+                TintLuminosityOpacity="0.35"
+                FallbackColor="#E6121D23" />
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>

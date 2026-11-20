@@ -1,6 +1,12 @@
 #if defined(__APPLE__)
 #define VK_USE_PLATFORM_METAL_EXT
 #endif
+#if defined(_WIN32)
+// COM from C: method macros, and the interface ids defined here rather than looked for in a library.
+#define COBJMACROS
+#define INITGUID
+#include <initguid.h>
+#endif
 
 #include <limits.h>
 #include <math.h>
@@ -29,6 +35,7 @@
 #include <libplacebo/utils/frame_queue.h>
 #if defined(_WIN32)
 #include <libplacebo/d3d11.h>
+#include <dxgi1_3.h>
 #else
 #include <libplacebo/vulkan.h>
 #endif
@@ -1074,6 +1081,7 @@ struct bsv_gpu {
     // Mac). Everything after `gpu` is the same for both.
 #if defined(_WIN32)
     pl_d3d11 d3d;
+    IDXGISwapChain1 *composition; // our own swapchain, when drawing into an application's panel
 #else
     pl_vk_inst inst;
     VkSurfaceKHR surface;
@@ -1456,6 +1464,8 @@ void bsv_gpu_destroy(bsv_gpu *g)
     pl_options_free(&g->opts);
     pl_swapchain_destroy(&g->sw);
 #if defined(_WIN32)
+    if (g->composition)
+        IDXGISwapChain1_Release(g->composition);
     pl_d3d11_destroy(&g->d3d);
 #else
     pl_vulkan_destroy(&g->vk);
@@ -1575,6 +1585,81 @@ bsv_gpu *bsv_gpu_create_win32(void *hwnd, char *error, int error_len)
         .window = (HWND) hwnd,
     ));
     return finish_gpu(g, g->d3d->software ? "Direct3D 11 (software)" : "Direct3D 11", error, error_len);
+}
+
+// For an application that composes its own window (WinUI): a swapchain that belongs to no
+// window. The application puts it into one of its panels and draws its controls above it;
+// we render into it exactly as into a window's. `*swapchain` receives an IDXGISwapChain1*,
+// owned by the gpu: the application takes its own reference when it adopts it.
+bsv_gpu *bsv_gpu_create_composition(int width, int height, void **swapchain, char *error, int error_len)
+{
+    bsv_gpu *g = new_gpu();
+    if (!g)
+        return NULL;
+    g->d3d = pl_d3d11_create(g->log, pl_d3d11_params(
+        .allow_software = true,
+    ));
+    if (!g->d3d) {
+        set_error(error, error_len, "cannot start Direct3D 11", 0);
+        bsv_gpu_destroy(g);
+        return NULL;
+    }
+    g->gpu = g->d3d->gpu;
+
+    IDXGIDevice *device = NULL;
+    IDXGIAdapter *adapter = NULL;
+    IDXGIFactory2 *factory = NULL;
+    HRESULT hr = ID3D11Device_QueryInterface(g->d3d->device, &IID_IDXGIDevice, (void **) &device);
+    if (SUCCEEDED(hr))
+        hr = IDXGIDevice_GetAdapter(device, &adapter);
+    if (SUCCEEDED(hr))
+        hr = IDXGIAdapter_GetParent(adapter, &IID_IDXGIFactory2, (void **) &factory);
+    if (SUCCEEDED(hr)) {
+        DXGI_SWAP_CHAIN_DESC1 desc = {
+            .Width = width > 8 ? (UINT) width : 8,
+            .Height = height > 8 ? (UINT) height : 8,
+            // Ten bits: enough for HDR10, and for SDR without banding.
+            .Format = DXGI_FORMAT_R10G10B10A2_UNORM,
+            .SampleDesc = { .Count = 1 },
+            .BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT,
+            .BufferCount = 2,
+            .Scaling = DXGI_SCALING_STRETCH,
+            .SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD,
+            .AlphaMode = DXGI_ALPHA_MODE_IGNORE,
+        };
+        hr = IDXGIFactory2_CreateSwapChainForComposition(factory, (IUnknown *) g->d3d->device, &desc, NULL,
+                                                         &g->composition);
+    }
+    if (factory)
+        IDXGIFactory2_Release(factory);
+    if (adapter)
+        IDXGIAdapter_Release(adapter);
+    if (device)
+        IDXGIDevice_Release(device);
+    if (FAILED(hr) || !g->composition) {
+        set_error(error, error_len, "cannot create a swapchain for the application's panel", 0);
+        bsv_gpu_destroy(g);
+        return NULL;
+    }
+    g->sw = pl_d3d11_create_swapchain(g->d3d, pl_d3d11_swapchain_params(
+        .swapchain = (IDXGISwapChain *) g->composition,
+    ));
+    *swapchain = g->composition;
+    return finish_gpu(g, g->d3d->software ? "Direct3D 11 (software)" : "Direct3D 11", error, error_len);
+}
+
+// A panel lays its swapchain out in its own units; tell it how many pixels one unit is, so a
+// swapchain sized in pixels is shown one to one on a scaled display.
+void bsv_gpu_set_scale(bsv_gpu *g, float scale)
+{
+    if (!g->composition || scale <= 0)
+        return;
+    IDXGISwapChain2 *sc = NULL;
+    if (SUCCEEDED(IDXGISwapChain1_QueryInterface(g->composition, &IID_IDXGISwapChain2, (void **) &sc))) {
+        DXGI_MATRIX_3X2_F inverse = { ._11 = 1.0f / scale, ._22 = 1.0f / scale };
+        IDXGISwapChain2_SetMatrixTransform(sc, &inverse);
+        IDXGISwapChain2_Release(sc);
+    }
 }
 #endif
 
