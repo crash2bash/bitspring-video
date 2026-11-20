@@ -34,7 +34,10 @@ Early. What works today, on the Mac:
 - A native interface in the system's Liquid Glass (macOS 26 or later): open or drop a file,
   transport, and a signal panel that shows the video's range of light against the display's
 
-Not there yet: choosing the output device, bitstream passthrough to a receiver, remembering where
+Only files on this machine are played. A file is never allowed to send the player to the network
+or to other files, whatever it claims to be.
+
+Not there yet: playing from the network, choosing the output device, bitstream passthrough to a receiver, remembering where
 a film was stopped, Windows playback (display detection for Windows is written and compiles;
 the renderer and a native Windows interface are not).
 

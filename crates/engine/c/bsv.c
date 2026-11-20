@@ -14,6 +14,7 @@
 #include <libavformat/avformat.h>
 #include <libavutil/dovi_meta.h>
 #include <libavutil/hwcontext.h>
+#include <libavutil/avstring.h>
 #include <libavutil/channel_layout.h>
 #include <libavutil/mastering_display_metadata.h>
 #include <libavutil/opt.h>
@@ -130,6 +131,38 @@ struct bsv_source {
     double video_frame_time;
 };
 
+// Open a file on this machine, and nothing else.
+//
+// A file handed to the player is not to be trusted: something named like a film can be a
+// playlist that points FFmpeg at other files or at the network. So only the "file" protocol
+// is allowed (whatever the file references, no connection is ever made), the path is marked
+// as a path (a name like "concat:a|b" is not read as a protocol), and formats that are lists
+// of other files are refused. `formats`, when given, limits what the file may be at all.
+static int open_local(AVFormatContext **fmt, const char *path, const char *formats)
+{
+    char *url = strncmp(path, "file:", 5) == 0 ? av_strdup(path) : av_asprintf("file:%s", path);
+    if (!url)
+        return AVERROR(ENOMEM);
+    AVDictionary *options = NULL;
+    av_dict_set(&options, "protocol_whitelist", "file", 0);
+    if (formats)
+        av_dict_set(&options, "format_whitelist", formats, 0);
+    int ret = avformat_open_input(fmt, url, NULL, &options);
+    av_dict_free(&options);
+    av_free(url);
+    if (ret < 0)
+        return ret;
+
+    static const char *const lists[] = { "hls", "concat", "dash", "imf", "lavfi" };
+    for (size_t i = 0; i < sizeof(lists) / sizeof(lists[0]); i++) {
+        if (av_match_name(lists[i], (*fmt)->iformat->name)) {
+            avformat_close_input(fmt);
+            return AVERROR_INVALIDDATA;
+        }
+    }
+    return 0;
+}
+
 // Tell the demuxer which streams are wanted; packets of the others are never read.
 static void choose_streams(bsv_source *s)
 {
@@ -154,7 +187,7 @@ bsv_source *bsv_source_open(const char *url, char *error, int error_len)
     if (!s)
         return NULL;
 
-    int ret = avformat_open_input(&s->fmt, url, NULL, NULL);
+    int ret = open_local(&s->fmt, url, NULL);
     if (ret < 0) {
         set_error(error, error_len, "cannot open the file", ret);
         goto fail;
@@ -194,7 +227,7 @@ bsv_source *bsv_source_open_sidecar(const char *url, char *error, int error_len)
     bsv_source *s = av_mallocz(sizeof(*s));
     if (!s)
         return NULL;
-    int ret = avformat_open_input(&s->fmt, url, NULL, NULL);
+    int ret = open_local(&s->fmt, url, "srt,ass,webvtt");
     if (ret < 0) {
         set_error(error, error_len, "cannot open the subtitle file", ret);
         goto fail;
