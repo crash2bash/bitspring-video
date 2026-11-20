@@ -60,6 +60,16 @@ fn main() {
         );
     }
     println!("cargo:rustc-link-arg=-Wl,-rpath,/usr/lib/swift");
+    // Optimised Swift asks the compiler's runtime which system version it is on (for the
+    // "is this API available" checks); Rust's link line does not bring that library along.
+    let runtime = PathBuf::from(output(
+        "xcrun",
+        &["clang", "--print-file-name=libclang_rt.osx.a"],
+    ));
+    if let Some(folder) = runtime.parent().filter(|_| runtime.exists()) {
+        println!("cargo:rustc-link-search=native={}", folder.display());
+        println!("cargo:rustc-link-lib=static=clang_rt.osx");
+    }
 }
 
 fn output(program: &str, args: &[&str]) -> String {

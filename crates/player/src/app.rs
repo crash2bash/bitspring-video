@@ -119,6 +119,7 @@ struct App {
 }
 
 pub fn run(settings: Settings) -> Result<(), String> {
+    ui::prepare();
     let event_loop = EventLoop::new().map_err(|e| e.to_string())?;
     let proxy = event_loop.create_proxy();
     let mut app = App {

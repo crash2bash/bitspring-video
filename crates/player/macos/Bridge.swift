@@ -57,6 +57,14 @@ final class InterfaceController {
             (visible ? "controls 1" : "controls 0").withCString { callback($0, user) }
         }
 
+        // A file may already be waiting: the one whose double-click launched the app.
+        Arrivals.controller = self
+        let waiting = Arrivals.waiting
+        Arrivals.waiting = []
+        if !waiting.isEmpty {
+            DispatchQueue.main.async { Arrivals.open(waiting) }
+        }
+
         // Keys are read here whatever has the focus, so the picture never needs to be clicked first.
         monitors.append(NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, event.window === self.view.window else { return event }
@@ -180,6 +188,59 @@ final class InterfaceController {
                 button.alphaValue = wanted
             }
         }
+    }
+}
+
+// MARK: - Files opened from outside
+
+/// Files the system asks the app to open: a double-click in Finder, "Open With", a drop on
+/// the Dock icon. When that is what launches the app, the request arrives before there is an
+/// interface to act on it, so it waits here.
+@MainActor
+enum Arrivals {
+    static var waiting: [String] = []
+    static weak var controller: InterfaceController?
+
+    static func open(_ paths: [String]) {
+        guard let path = paths.first else { return }
+        if let controller {
+            controller.model.send("open \(path)")
+        } else {
+            waiting = [path]
+        }
+    }
+}
+
+final class OpenDocumentsHandler: NSObject {
+    static let shared = OpenDocumentsHandler()
+
+    @objc func handle(_ event: NSAppleEventDescriptor, withReply reply: NSAppleEventDescriptor) {
+        guard let direct = event.paramDescriptor(forKeyword: keyDirectObject) else { return }
+        var paths: [String] = []
+        if direct.numberOfItems > 0 {
+            for index in 1...direct.numberOfItems {
+                if let url = direct.atIndex(index)?.fileURLValue { paths.append(url.path) }
+            }
+        } else if let url = direct.fileURLValue {
+            paths.append(url.path)
+        }
+        MainActor.assumeIsolated { Arrivals.open(paths) }
+    }
+}
+
+/// Called once, before the application starts running. The handler has to go in while the
+/// application is finishing its launch: earlier and AppKit replaces it with its own, later
+/// and the request that launched the app has already gone by.
+@_cdecl("bsv_app_prepare")
+public func bsvAppPrepare() {
+    NotificationCenter.default.addObserver(
+        forName: NSApplication.willFinishLaunchingNotification, object: nil, queue: nil
+    ) { _ in
+        NSAppleEventManager.shared().setEventHandler(
+            OpenDocumentsHandler.shared,
+            andSelector: #selector(OpenDocumentsHandler.handle(_:withReply:)),
+            forEventClass: AEEventClass(kCoreEventClass),
+            andEventID: AEEventID(kAEOpenDocuments))
     }
 }
 

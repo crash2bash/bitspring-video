@@ -56,6 +56,8 @@ yet been tried on a real Dolby Vision file.
 - `crates/player`: the window and the playback threads.
 - `crates/player/macos`: the interface, in SwiftUI. It is compiled into the player and talks to
   it through four C functions (`src/ui.rs`): state goes in as JSON, commands come back as text.
+- `scripts/`: builds the application bundle and gathers its libraries.
+- `assets/icon/`: the icon and the script that draws it.
 - `testdata/make-clips.sh`: generates test clips: grey patches at known luminance, and a flash
   with a beep every second for checking that picture and sound coincide.
 
@@ -65,6 +67,17 @@ yet been tried on a real Dolby Vision file.
 brew install ffmpeg libplacebo libass molten-vk vulkan-loader pkgconf
 cargo build --release
 ```
+
+To build the application itself, with its icon, its libraries inside and video files offered
+in Finder's "Open With":
+
+```
+scripts/bundle-macos.sh        # makes target/bundle/BitSpring Video.app
+```
+
+The libraries are taken from Homebrew as installed. Homebrew's FFmpeg includes GPL parts, so an
+app built this way is for your own machine; one to give to others needs an FFmpeg built with
+decoders only. It is signed without a certificate, which macOS accepts on the Mac that built it.
 
 ## Running
 

@@ -16,6 +16,7 @@ use crate::playback::{self, Command};
 use crate::prefs::Preferences;
 
 unsafe extern "C" {
+    fn bsv_app_prepare();
     fn bsv_ui_attach(
         parent: *mut c_void,
         callback: extern "C" fn(*const c_char, *mut c_void),
@@ -24,6 +25,12 @@ unsafe extern "C" {
     fn bsv_ui_update(ui: *mut c_void, json: *const c_char);
     fn bsv_ui_perform(ui: *mut c_void, action: *const c_char);
     fn bsv_ui_detach(ui: *mut c_void);
+}
+
+/// Get ready for files opened from Finder. Call once, before the event loop starts.
+pub fn prepare() {
+    // SAFETY: registers an observer; no preconditions beyond being called on the main thread.
+    unsafe { bsv_app_prepare() };
 }
 
 /// Commands the interface has sent and nobody has taken yet.

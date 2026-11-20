@@ -236,7 +236,29 @@ fn run() -> Result<(), String> {
     result
 }
 
+/// Inside an application bundle, use the Vulkan driver that ships in it rather than whatever
+/// the machine happens to have installed.
+#[cfg(target_os = "macos")]
+fn use_bundled_vulkan_driver() {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let Some(contents) = exe.parent().and_then(|macos| macos.parent()) else {
+        return;
+    };
+    let driver = contents.join("Resources/vulkan/icd.d/MoltenVK_icd.json");
+    if driver.exists() {
+        // SAFETY: the very start of `main`, before any other thread exists.
+        unsafe {
+            std::env::set_var("VK_DRIVER_FILES", &driver);
+            std::env::set_var("VK_ICD_FILENAMES", &driver);
+        }
+    }
+}
+
 fn main() -> ExitCode {
+    #[cfg(target_os = "macos")]
+    use_bundled_vulkan_driver();
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) if e.is_empty() => {
