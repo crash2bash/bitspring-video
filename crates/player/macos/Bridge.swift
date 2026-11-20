@@ -23,6 +23,7 @@ final class InterfaceController {
     let model = PlayerModel()
     private let view: OverlayView
     private var monitors: [Any] = []
+    private var observers: [NSObjectProtocol] = []
     private let decoder = JSONDecoder()
 
     init(parent: NSView, callback: @escaping CommandCallback, user: UnsafeMutableRawPointer?) {
@@ -42,6 +43,20 @@ final class InterfaceController {
             window.toolbar = toolbar
             window.toolbarStyle = .unified
             window.titlebarSeparatorStyle = .none
+            // In full screen the system draws that toolbar as a solid bar across the top of
+            // the picture, over the top row of glass. There are no window buttons to line up
+            // there, so it goes for as long as full screen lasts.
+            let center = NotificationCenter.default
+            observers.append(center.addObserver(
+                forName: NSWindow.willEnterFullScreenNotification, object: window, queue: .main
+            ) { [weak window] _ in
+                MainActor.assumeIsolated { window?.toolbar?.isVisible = false }
+            })
+            observers.append(center.addObserver(
+                forName: NSWindow.didExitFullScreenNotification, object: window, queue: .main
+            ) { [weak window] _ in
+                MainActor.assumeIsolated { window?.toolbar?.isVisible = true }
+            })
         }
 
         model.send = { [weak self] command in
@@ -106,6 +121,8 @@ final class InterfaceController {
     func detach() {
         monitors.forEach(NSEvent.removeMonitor)
         monitors.removeAll()
+        observers.forEach(NotificationCenter.default.removeObserver)
+        observers.removeAll()
         view.removeFromSuperview()
     }
 
