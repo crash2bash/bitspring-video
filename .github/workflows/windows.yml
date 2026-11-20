@@ -1,0 +1,95 @@
+# Builds the player for Windows and checks that it starts and shows a frame.
+#
+# The machine this runs on has no graphics card and no HDR display: what is proved here is
+# that the program builds, decodes and draws through Direct3D 11 (in software). HDR output
+# itself can only be judged on a real Windows machine with an HDR screen.
+name: Windows
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "scripts/package-windows.sh"
+      - ".github/workflows/windows.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-rust
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-ffmpeg
+            mingw-w64-ucrt-x86_64-libplacebo
+            mingw-w64-ucrt-x86_64-libass
+            mingw-w64-ucrt-x86_64-ntldd
+
+      - name: Versions
+        run: |
+          rustc --version
+          pkg-config --modversion libplacebo libavcodec libass
+
+      - name: Build
+        run: cargo build --release -p bitspring-video
+
+      - name: Tests
+        run: cargo test --release --workspace
+
+      - name: Package
+        run: scripts/package-windows.sh
+
+      - name: Start it and show a frame
+        run: |
+          cd target/bundle/BitSpring-Video-windows
+          # A short clip tagged HDR10, with sound and a subtitle track.
+          printf '1\n00:00:00,200 --> 00:00:04,000\nA subtitle.\n\n' > clip.srt
+          ffmpeg -hide_banner -loglevel error -y \
+            -f lavfi -i "testsrc2=size=1280x720:rate=24:duration=4" \
+            -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=4" \
+            -i clip.srt -map 0:v -map 1:a -map 2:s \
+            -vf "format=yuv420p10le" -c:v libx265 -preset ultrafast \
+            -x265-params "log-level=error:hdr-opt=1:repeat-headers=1:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc:master-display=G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,50):max-cll=1000,400" \
+            -c:a aac -c:s srt clip.mkv
+
+          echo "::group::Displays"
+          ./bitspring-video.exe --displays || echo "(no display described on this machine)"
+          echo "::endgroup::"
+
+          echo "::group::The file"
+          ./bitspring-video.exe --info clip.mkv
+          echo "::endgroup::"
+
+          echo "::group::Playing for five seconds"
+          timeout 120 ./bitspring-video.exe --verbose --no-sound --settings settings.json \
+            --script "1:subs 2,5:quit" clip.mkv 2>&1 | tee run.log
+          echo "::endgroup::"
+
+          # A "Signal" line is printed once a frame has gone through the renderer to the window.
+          grep -E '^(Video|Signal|Clock)' run.log
+          grep -q '^Signal:' run.log
+          rm -f clip.srt clip.mkv run.log settings.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BitSpring-Video-windows
+          path: target/bundle/BitSpring-Video-windows
+          retention-days: 14
