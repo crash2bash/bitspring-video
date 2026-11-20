@@ -91,9 +91,11 @@ jobs:
           ./bitspring-video.exe --info ../../clip/clip.mkv
           echo "::endgroup::"
 
-          echo "::group::Playing for five seconds"
+          # Fifteen seconds, not five: on a slow runner the software renderer has spent more
+          # than five compiling its shaders before the first frame is through.
+          echo "::group::Playing for fifteen seconds"
           timeout 120 ./bitspring-video.exe --verbose --no-sound --settings settings.json \
-            --script "1:subs 2,5:quit" ../../clip/clip.mkv 2>&1 | tee run.log
+            --script "1:subs 2,15:quit" ../../clip/clip.mkv 2>&1 | tee run.log
           echo "::endgroup::"
 
           # A "Signal" line is printed once a frame has gone through the renderer to the window.
