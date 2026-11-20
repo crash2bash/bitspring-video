@@ -102,21 +102,9 @@ private struct SettingsPanel: View {
                     value: settings.subtitleNits, in: 60...400, step: 1,
                     text: { "\(nits($0)) \(nitsUnit)" },
                     send: { model.set("subtitleNits", String(format: "%.0f", $0)) })
-                row(L("Show", "Показывать"), note: L("From the next file", "Со следующего файла")) {
-                    LanguageMenu(
-                        none: L("Only when forced", "Только форсированные"),
-                        selected: settings.subtitleLanguage,
-                        onSelect: { model.set("subtitleLanguage", $0) })
-                }
             }
 
             group(L("Sound", "Звук")) {
-                row(L("Language", "Язык"), note: L("From the next file", "Со следующего файла")) {
-                    LanguageMenu(
-                        none: L("As the file prefers", "Как в файле"),
-                        selected: settings.audioLanguage,
-                        onSelect: { model.set("audioLanguage", $0) })
-                }
                 slider(
                     L("Picture delay", "Задержка картинки"),
                     value: settings.audioDelay, in: -200...500, step: 10,
@@ -127,6 +115,29 @@ private struct SettingsPanel: View {
                     "Для телевизора или ресивера, который задерживает звук."))
                     .font(.system(size: 11))
                     .foregroundStyle(Color.quiet)
+            }
+
+            // Rules for files yet to be opened, kept apart from what acts on the one playing:
+            // beside the size and the delay they read as a choice for the film on screen.
+            group(L("When a file opens", "При открытии файла")) {
+                row(L("Sound track", "Звуковая дорожка")) {
+                    LanguageMenu(
+                        none: L("As the file prefers", "Как в файле"),
+                        selected: settings.audioLanguage,
+                        onSelect: { model.set("audioLanguage", $0) })
+                }
+                row(L("Subtitles", "Субтитры")) {
+                    LanguageMenu(
+                        none: L("Only when forced", "Только форсированные"),
+                        selected: settings.subtitleLanguage,
+                        onSelect: { model.set("subtitleLanguage", $0) })
+                }
+                Text(L(
+                    "Which tracks a file starts with. While it plays, change them from the bar below.",
+                    "С какими дорожками файл начинается. Во время просмотра они меняются на панели внизу."))
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.quiet)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(16)

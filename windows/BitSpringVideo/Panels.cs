@@ -364,21 +364,27 @@ public sealed partial class MainWindow
             SliderRow(L("Size", "Размер"), settings.SubtitleScale, 0.5, 2, 0.05,
                 value => $"{Math.Round(value * 100)}%", value => Set("subtitleScale", Number(value))),
             SliderRow(L("Brightness in HDR", "Яркость в HDR"), settings.SubtitleNits, 60, 400, 1,
-                value => $"{Nits(value)} {NitsUnit}", value => Set("subtitleNits", Number(Math.Round(value)))),
-            Row(L("Show", "Показывать"),
-                LanguageBox(L("Only when forced", "Только форсированные"), settings.SubtitleLanguage,
-                    value => Set("subtitleLanguage", value)),
-                L("From the next file", "Со следующего файла"))));
+                value => $"{Nits(value)} {NitsUnit}", value => Set("subtitleNits", Number(Math.Round(value))))));
 
         panel.Children.Add(Group(
             L("Sound", "Звук"),
-            Row(L("Language", "Язык"),
-                LanguageBox(L("As the file prefers", "Как в файле"), settings.AudioLanguage,
-                    value => Set("audioLanguage", value)),
-                L("From the next file", "Со следующего файла")),
             SliderRow(L("Picture delay", "Задержка картинки"), settings.AudioDelay, -200, 500, 10,
                 value => $"{Math.Round(value)} {L("ms", "мс")}", value => Set("audioDelay", Number(Math.Round(value)))),
             Text(L("For a TV or receiver that delays sound.", "Для телевизора или ресивера, который задерживает звук."),
+                11, quiet: true)));
+
+        // Rules for files yet to be opened, kept apart from what acts on the one playing:
+        // beside the size and the delay they read as a choice for the film on screen.
+        panel.Children.Add(Group(
+            L("When a file opens", "При открытии файла"),
+            Row(L("Sound track", "Звуковая дорожка"),
+                LanguageBox(L("As the file prefers", "Как в файле"), settings.AudioLanguage,
+                    value => Set("audioLanguage", value))),
+            Row(L("Subtitles", "Субтитры"),
+                LanguageBox(L("Only when forced", "Только форсированные"), settings.SubtitleLanguage,
+                    value => Set("subtitleLanguage", value))),
+            Text(L("Which tracks a file starts with. While it plays, change them from the bar below.",
+                   "С какими дорожками файл начинается. Во время просмотра они меняются на панели внизу."),
                 11, quiet: true)));
 
         return new ScrollViewer { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, MaxHeight = 560 };
