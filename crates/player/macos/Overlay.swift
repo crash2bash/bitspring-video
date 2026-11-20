@@ -177,6 +177,15 @@ struct PlayerOverlay: View {
                 .gesture(WindowDragGesture())
                 .onTapGesture(count: 2) { model.send("toggle-fullscreen") }
 
+            // With the settings open, a click on the picture puts them away and does nothing
+            // else: the second click of a double-click finds them already closed.
+            if model.panel == .settings {
+                Color.clear
+                    .contentShape(Rectangle())
+                    .gesture(WindowDragGesture())
+                    .onTapGesture { model.toggle(.settings) }
+            }
+
             if model.status.file == nil {
                 EmptyState(model: model)
                 // Settings are within reach before anything is open.

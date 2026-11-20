@@ -13,6 +13,10 @@ struct SettingsCorner: View {
     var body: some View {
         if model.panel == .settings {
             SettingsPanel(model: model)
+                // A click between the panel's own controls stays in the panel: without this
+                // it would reach the picture behind and close the settings.
+                .contentShape(Rectangle())
+                .onTapGesture {}
                 .glassEffect(playerGlass(), in: .rect(cornerRadius: 24, style: .continuous))
                 .glassEffectID("settings", in: glass)
         } else {

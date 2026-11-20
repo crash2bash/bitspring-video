@@ -387,7 +387,14 @@ public sealed partial class MainWindow
                    "С какими дорожками файл начинается. Во время просмотра они меняются на панели внизу."),
                 11, quiet: true)));
 
-        return new ScrollViewer { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, MaxHeight = 560 };
+        // As tall as the window lets it be, so that the last group is not left under a scroll
+        // nothing points at; in a short window it scrolls.
+        return new ScrollViewer
+        {
+            Content = panel,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            MaxHeight = Math.Max(240, Root.ActualHeight - 96),
+        };
     }
 
     /// <summary>A list of languages, with one more choice at the top for "no preference".</summary>
