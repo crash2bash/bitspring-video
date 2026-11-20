@@ -3,6 +3,7 @@
 
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Shapes;
 using Windows.UI;
@@ -76,17 +77,34 @@ public sealed partial class MainWindow
         return panel;
     }
 
-    /// <summary>A few choices of which one is on.</summary>
-    private static RadioButtons Choices((string Value, string Label)[] options, string selected, Action<string> chosen)
+    /// <summary>A few choices side by side, of which one is on.</summary>
+    private static Grid Choices((string Value, string Label)[] options, string selected, Action<string> chosen)
     {
-        var buttons = new RadioButtons { MaxColumns = options.Length };
-        foreach (var option in options) buttons.Items.Add(option.Label);
-        buttons.SelectedIndex = Math.Max(0, Array.FindIndex(options, o => o.Value == selected));
-        buttons.SelectionChanged += (_, _) =>
+        var grid = new Grid { ColumnSpacing = 4 };
+        var buttons = new List<ToggleButton>();
+        var on = Math.Max(0, Array.FindIndex(options, o => o.Value == selected));
+        foreach (var option in options)
         {
-            if (buttons.SelectedIndex >= 0) chosen(options[buttons.SelectedIndex].Value);
-        };
-        return buttons;
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            var button = new ToggleButton
+            {
+                Content = option.Label,
+                IsChecked = buttons.Count == on,
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                FontSize = 12,
+                Padding = new Thickness(4, 5, 4, 6),
+            };
+            button.Click += (_, _) =>
+            {
+                // Pressing the one that is on leaves it on.
+                foreach (var other in buttons) other.IsChecked = ReferenceEquals(other, button);
+                chosen(option.Value);
+            };
+            Grid.SetColumn(button, buttons.Count);
+            buttons.Add(button);
+            grid.Children.Add(button);
+        }
+        return grid;
     }
 
     // ---- The signal panel --------------------------------------------------------------------

@@ -181,6 +181,8 @@ jobs:
       - name: Start the application and photograph it
         run: |
           try { Set-DisplayResolution -Width 1920 -Height 1080 -Force | Out-Null } catch { "The screen stays as it is: $_" }
+          # Give the desktop a moment to settle before anything opens a window on it.
+          Start-Sleep -Seconds 5
           Add-Type -AssemblyName System.Windows.Forms, System.Drawing
           New-Item -ItemType Directory shots | Out-Null
           $here = (Get-Location).Path

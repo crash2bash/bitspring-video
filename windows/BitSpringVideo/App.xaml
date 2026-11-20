@@ -37,13 +37,15 @@
             <SolidColorBrush x:Key="SlateBrush" Color="{StaticResource Slate}" />
 
             <!-- The glass: the system's acrylic, toned towards slate so that porcelain text
-                 stays readable over the brightest highlights. -->
+                 stays readable over the brightest highlights. Where the system will not
+                 blur (transparency turned off, no graphics card) the picture still shows
+                 through, unblurred. -->
             <AcrylicBrush
                 x:Key="GlassBrush"
                 TintColor="{StaticResource Slate}"
                 TintOpacity="0.45"
                 TintLuminosityOpacity="0.35"
-                FallbackColor="#E6121D23" />
+                FallbackColor="#B8121D23" />
         </ResourceDictionary>
     </Application.Resources>
 </Application>

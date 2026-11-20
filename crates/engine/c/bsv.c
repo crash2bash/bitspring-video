@@ -1621,14 +1621,23 @@ bsv_gpu *bsv_gpu_create_composition(int width, int height, void **swapchain, cha
             // Ten bits: enough for HDR10, and for SDR without banding.
             .Format = DXGI_FORMAT_R10G10B10A2_UNORM,
             .SampleDesc = { .Count = 1 },
-            .BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT,
+            // What libplacebo asks of the swapchains it makes itself. Without the last of
+            // these it cannot clear the bars beside a picture narrower than the panel.
+            .BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT | DXGI_USAGE_SHADER_INPUT | DXGI_USAGE_UNORDERED_ACCESS,
             .BufferCount = 2,
             .Scaling = DXGI_SCALING_STRETCH,
             .SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD,
             .AlphaMode = DXGI_ALPHA_MODE_IGNORE,
         };
+        if (ID3D11Device_GetFeatureLevel(g->d3d->device) < D3D_FEATURE_LEVEL_11_0)
+            desc.BufferUsage &= ~DXGI_USAGE_UNORDERED_ACCESS;
         hr = IDXGIFactory2_CreateSwapChainForComposition(factory, (IUnknown *) g->d3d->device, &desc, NULL,
                                                          &g->composition);
+        if (FAILED(hr) && (desc.BufferUsage & DXGI_USAGE_UNORDERED_ACCESS)) {
+            desc.BufferUsage &= ~DXGI_USAGE_UNORDERED_ACCESS;
+            hr = IDXGIFactory2_CreateSwapChainForComposition(factory, (IUnknown *) g->d3d->device, &desc, NULL,
+                                                             &g->composition);
+        }
     }
     if (factory)
         IDXGIFactory2_Release(factory);

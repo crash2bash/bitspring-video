@@ -37,9 +37,13 @@ Early. What works today, on the Mac:
 Only files on this machine are played. A file is never allowed to send the player to the network
 or to other files, whatever it claims to be.
 
-Not there yet: playing from the network, choosing the output device, bitstream passthrough to a receiver, remembering where
-a film was stopped, Windows playback (display detection for Windows is written and compiles;
-the renderer and a native Windows interface are not).
+On Windows the same player runs through Direct3D 11, inside a native application (WinUI 3)
+with the same controls, panels and settings. It builds, plays and draws its interface on the
+build machine, which has neither a graphics card nor an HDR screen: HDR output, hardware
+decoding and sound on Windows have not yet been judged on a real machine.
+
+Not there yet: playing from the network, choosing the output device, bitstream passthrough to a
+receiver, remembering where a film was stopped.
 
 Dolby Vision: the RPU is applied by libplacebo (profiles 5 and 8; profile 7 plays its base layer
 with the RPU, the enhancement layer is not decoded). The output is HDR10 mapped to the display.
@@ -53,9 +57,14 @@ yet been tried on a real Dolby Vision file.
 - `crates/engine`: decoding (FFmpeg) and rendering (libplacebo over Vulkan; MoltenVK on the Mac).
   A small C bridge in `c/`, a safe Rust API on top.
 - `crates/audio`: sound output and the playback clock.
-- `crates/player`: the window and the playback threads.
+- `crates/player`: the window and the playback threads. A library as well as a program, so
+  that the Windows application can carry the same player.
 - `crates/player/macos`: the interface, in SwiftUI. It is compiled into the player and talks to
   it through four C functions (`src/ui.rs`): state goes in as JSON, commands come back as text.
+- `crates/winhost`: the player as `bitspring_video_core.dll` for the Windows application. It
+  plays into a swapchain that the application shows in one of its panels.
+- `windows/BitSpringVideo`: the Windows application, in C# and WinUI 3. It talks to the core
+  the way the Mac's interface does: state as JSON, commands as text.
 - `scripts/`: builds the application bundle and gathers its libraries.
 - `assets/icon/`: the icon and the script that draws it.
 - `testdata/make-clips.sh`: generates test clips: grey patches at known luminance, and a flash
@@ -81,18 +90,26 @@ decoders only. It is signed without a certificate, which macOS accepts on the Ma
 
 ## Building (Windows)
 
-In an [MSYS2](https://www.msys2.org) UCRT64 shell:
+Two halves that end up in one folder. The player's core, in an [MSYS2](https://www.msys2.org)
+UCRT64 shell:
 
 ```
 pacman -S mingw-w64-ucrt-x86_64-{rust,gcc,pkgconf,ffmpeg,libplacebo,libass,ntldd}
-cargo build --release
-scripts/package-windows.sh     # the program and its libraries, in target/bundle
+cargo build --release -p bitspring-video -p bsv-winhost
+scripts/package-windows.sh     # the core and its libraries, in target/bundle
 ```
 
-`.github/workflows/windows.yml` does the same on every push, starts the program on a clip and
-keeps the folder as a download. On Windows the picture goes through Direct3D 11; there is no
-drawn interface yet, so the keys and the title bar are the controls, and H steps through the
-HDR modes. HDR output on Windows has not been seen on a real HDR screen.
+And the application, with the [.NET 8 SDK](https://dotnet.microsoft.com/download):
+
+```
+dotnet build windows/BitSpringVideo/BitSpringVideo.csproj -c Release -p:Platform=x64 -o target/bundle/BitSpring-Video-windows
+```
+
+`BitSpringVideo.exe` in that folder is the player. Beside it, `bitspring-video.exe` is the same
+player in a bare window, for `--displays`, `--info` and scripted runs.
+
+`.github/workflows/windows.yml` does all of this on every push, starts the application on a clip,
+photographs it, and keeps the folder as a download.
 
 ## Running
 

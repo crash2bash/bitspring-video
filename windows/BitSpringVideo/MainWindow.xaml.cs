@@ -60,6 +60,17 @@ public sealed partial class MainWindow : Window
         Title = "BitSpring Video";
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(DragRegion);
+        // The window's own buttons sit over a dark picture whatever theme the system is in:
+        // left alone they would be drawn dark on dark when the system's theme is light.
+        var bar = AppWindow.TitleBar;
+        bar.ButtonBackgroundColor = Microsoft.UI.Colors.Transparent;
+        bar.ButtonInactiveBackgroundColor = Microsoft.UI.Colors.Transparent;
+        bar.ButtonForegroundColor = Porcelain;
+        bar.ButtonInactiveForegroundColor = Color.FromArgb(255, 0x9A, 0xA3, 0x9F);
+        bar.ButtonHoverBackgroundColor = Color.FromArgb(255, 0x2C, 0x38, 0x3E);
+        bar.ButtonHoverForegroundColor = Porcelain;
+        bar.ButtonPressedBackgroundColor = Color.FromArgb(255, 0x3D, 0x4A, 0x51);
+        bar.ButtonPressedForegroundColor = Porcelain;
         var icon = System.IO.Path.Combine(AppContext.BaseDirectory, "Assets", "icon.ico");
         if (File.Exists(icon)) AppWindow.SetIcon(icon);
         FitToScreen();
