@@ -79,6 +79,21 @@ The libraries are taken from Homebrew as installed. Homebrew's FFmpeg includes G
 app built this way is for your own machine; one to give to others needs an FFmpeg built with
 decoders only. It is signed without a certificate, which macOS accepts on the Mac that built it.
 
+## Building (Windows)
+
+In an [MSYS2](https://www.msys2.org) UCRT64 shell:
+
+```
+pacman -S mingw-w64-ucrt-x86_64-{rust,gcc,pkgconf,ffmpeg,libplacebo,libass,ntldd}
+cargo build --release
+scripts/package-windows.sh     # the program and its libraries, in target/bundle
+```
+
+`.github/workflows/windows.yml` does the same on every push, starts the program on a clip and
+keeps the folder as a download. On Windows the picture goes through Direct3D 11; there is no
+drawn interface yet, so the keys and the title bar are the controls, and H steps through the
+HDR modes. HDR output on Windows has not been seen on a real HDR screen.
+
 ## Running
 
 ```
