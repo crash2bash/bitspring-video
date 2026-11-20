@@ -216,6 +216,7 @@ struct SettingsState {
     reported_peak: f32,
     quality: String,
     hardware_decoding: bool,
+    dolby_vision: bool,
     subtitle_scale: f32,
     subtitle_nits: f32,
     subtitle_language: String,
@@ -269,6 +270,9 @@ struct VideoState {
     mastering_max: Option<f32>,
     max_cll: Option<f32>,
     dolby_vision: Option<String>,
+    /// What a Dolby Vision file is without its RPU ("HDR10", "HLG", "SDR"), when it can be
+    /// played that way: the interface then offers the choice.
+    base_layer: Option<&'static str>,
     enhancement_layer: bool,
     hardware: bool,
 }
@@ -366,6 +370,7 @@ impl State {
             reported_peak,
             quality: prefs.quality.clone(),
             hardware_decoding: prefs.hardware_decoding,
+            dolby_vision: prefs.dolby_vision,
             subtitle_scale: prefs.subtitle_scale,
             subtitle_nits: prefs.subtitle_nits,
             subtitle_language: prefs.subtitle_language.clone(),
@@ -433,6 +438,7 @@ impl State {
                     dv.profile.to_string()
                 }
             }),
+            base_layer: info.dolby_vision.and_then(|dv| dv.base_layer()),
             enhancement_layer: info.dolby_vision.is_some_and(|dv| dv.enhancement_layer),
             hardware: info.hardware,
         });

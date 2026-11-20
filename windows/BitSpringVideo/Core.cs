@@ -148,12 +148,17 @@ internal sealed class PlayerState
     /// <summary>Brightest level the content claims, cd/m².</summary>
     public double? ContentPeak => Video?.MaxCll ?? Video?.MasteringMax;
 
+    /// <summary>The file is Dolby Vision and is shown as such, not as the plain signal it also is.</summary>
+    public bool PlaysAsDolbyVision =>
+        // What reached the screen, once something has; until then, what was asked for.
+        Video?.DolbyVision != null && (Signal?.DolbyVision ?? (Video.BaseLayer == null || Settings.DolbyVision));
+
     public string FormatName
     {
         get
         {
             if (Video == null) return "";
-            if (Video.DolbyVision != null) return "Dolby Vision";
+            if (PlaysAsDolbyVision) return "Dolby Vision";
             if (Signal?.Hdr10Plus == true) return "HDR10+";
             return Video.Transfer switch { "PQ" => "HDR10", "HLG" => "HLG", _ => "SDR" };
         }
@@ -199,6 +204,11 @@ internal sealed class VideoInfo
     public double? MasteringMax;
     public double? MaxCll;
     public string? DolbyVision;
+    /// <summary>
+    /// What a Dolby Vision file is without its metadata ("HDR10", "HLG", "SDR"), when it can
+    /// be played that way.
+    /// </summary>
+    public string? BaseLayer;
     public bool EnhancementLayer;
     public bool Hardware;
 }
@@ -257,6 +267,8 @@ internal sealed class SettingsInfo
     public double ReportedPeak;
     public string Quality = "high";
     public bool HardwareDecoding = true;
+    /// <summary>A file that is both Dolby Vision and a plain signal is played as Dolby Vision.</summary>
+    public bool DolbyVision = true;
     public double SubtitleScale = 1;
     public double SubtitleNits = 203;
     public string SubtitleLanguage = "";

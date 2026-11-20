@@ -50,6 +50,8 @@ with the RPU, the enhancement layer is not decoded). The output is HDR10 mapped 
 No player outside licensed devices can switch a TV into its Dolby Vision mode. Tried on
 profile 8.1 (a streaming-service series): it plays with the RPU applied. Profiles 5 and 7 have
 not been tried on real files, and the result has not been compared with a licensed device.
+A file that is Dolby Vision and HDR10 at once (profile 8.1, and 7) can be played either way:
+the signal panel offers the choice, and it is remembered.
 
 ## Layout
 

@@ -212,6 +212,11 @@ int bsv_gpu_set_options(bsv_gpu *g, int preset, const char *options);
 // Drop every queued frame (after a seek or when the file changes).
 void bsv_gpu_reset(bsv_gpu *g);
 
+// Whether a Dolby Vision RPU on a frame is applied (the default) or left aside, which shows
+// the base layer as the plain signal it also is (HDR10 for profile 8.1). It holds for frames
+// taken from now on: drop the queued ones and decode again from the current position.
+void bsv_gpu_set_dolby_vision(bsv_gpu *g, int use);
+
 // Subtitles. kind: 0 off, 1 text (header: the stream's ASS header, or NULL for the built-in
 // style), 2 pictures. Fonts must be added before the first text track begins.
 void bsv_gpu_subs_add_font(bsv_gpu *g, const char *name, const void *data, int len);

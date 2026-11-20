@@ -214,6 +214,7 @@ impl Host {
             path: path.to_string(),
             hardware: self.prefs.hardware_decoding,
             mode: self.mode,
+            dolby_vision: self.prefs.dolby_vision,
             quality: self.prefs.render_quality(),
             renderer_options: String::new(),
             start: 0.0,
@@ -252,6 +253,7 @@ impl Host {
         match key {
             "displayPeak" => self.send(Command::Display(Box::new(self.shown_display()))),
             "quality" => self.send(Command::SetQuality(self.prefs.render_quality())),
+            "dolbyVision" => self.send(Command::SetDolbyVision(self.prefs.dolby_vision)),
             "subtitleScale" | "subtitleNits" => self.send(Command::SubtitleLook {
                 scale: self.prefs.subtitle_scale,
                 nits: self.prefs.subtitle_nits,

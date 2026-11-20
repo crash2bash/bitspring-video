@@ -370,6 +370,20 @@ private struct SignalPanel: View {
             }
             .font(.system(size: 12))
 
+            // A file that carries two versions of the picture: Dolby Vision, and the plain
+            // signal its base layer is.
+            if let base = status.video?.baseLayer {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(L("Play as", "Показывать как"))
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.quiet)
+                    Choice(
+                        options: [("1", "Dolby Vision"), ("0", base)],
+                        selected: status.settings.dolbyVision ? "1" : "0",
+                        onSelect: { model.set("dolbyVision", $0) })
+                }
+            }
+
             if status.isHdrSource {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(L("Who fits HDR to the screen", "Кто подгоняет HDR под экран"))
@@ -452,7 +466,9 @@ private struct SignalPanel: View {
             }
             if let profile = v.dolbyVision {
                 colour += L(", Dolby Vision profile \(profile)", ", Dolby Vision, профиль \(profile)")
-                if v.enhancementLayer {
+                if !status.playsAsDolbyVision {
+                    colour += L(" (not used)", " (не используется)")
+                } else if v.enhancementLayer {
                     colour += L(" (base layer only)", " (только базовый слой)")
                 }
             }

@@ -1092,6 +1092,7 @@ struct bsv_gpu {
     pl_renderer rr;
     pl_queue queue;
     pl_options opts;
+    bool ignore_dovi; // show a Dolby Vision file's base layer as it is, without its RPU
 
     // Subtitles. Text is drawn by libass; pictures come ready-made from the decoder.
     int subs_kind; // 0 off, 1 text, 2 pictures
@@ -1688,6 +1689,11 @@ int bsv_gpu_set_options(bsv_gpu *g, int preset, const char *options)
     return 0;
 }
 
+void bsv_gpu_set_dolby_vision(bsv_gpu *g, int use)
+{
+    g->ignore_dovi = !use;
+}
+
 void bsv_gpu_reset(bsv_gpu *g)
 {
     pl_queue_reset(g->queue);
@@ -1722,6 +1728,7 @@ static void discard_frame(const struct pl_source_frame *src)
 struct pull_ctx {
     bsv_pull_fn pull;
     void *user;
+    bool ignore_dovi;
 };
 
 static enum pl_queue_status pull_frame(struct pl_source_frame *out, const struct pl_queue_params *params)
@@ -1730,6 +1737,12 @@ static enum pl_queue_status pull_frame(struct pl_source_frame *out, const struct
     struct bsv_frame f = { 0 };
     switch (ctx->pull(ctx->user, &f)) {
     case BSV_PULL_FRAME:
+        // Without its RPU the frame is what its base layer says: HDR10 with the stream's own
+        // mastering metadata, HLG or SDR.
+        if (ctx->ignore_dovi) {
+            av_frame_remove_side_data(f.avframe, AV_FRAME_DATA_DOVI_METADATA);
+            av_frame_remove_side_data(f.avframe, AV_FRAME_DATA_DOVI_RPU_BUFFER);
+        }
         *out = (struct pl_source_frame) {
             .pts = f.pts,
             .duration = f.duration,
@@ -1835,7 +1848,7 @@ int bsv_gpu_render(bsv_gpu *g, double pts, double vsync, const struct bsv_target
     memset(stats, 0, sizeof(*stats));
     const struct pl_render_params *params = &g->opts->params;
 
-    struct pull_ctx ctx = { pull, user };
+    struct pull_ctx ctx = { pull, user, g->ignore_dovi };
     struct pl_frame_mix mix = { 0 };
     enum pl_queue_status status = pl_queue_update(g->queue, &mix, pl_queue_params(
         .pts = pts,

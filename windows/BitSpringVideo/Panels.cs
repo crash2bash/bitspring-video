@@ -143,6 +143,17 @@ public sealed partial class MainWindow
         }
         panel.Children.Add(rows);
 
+        // A file that carries two versions of the picture: Dolby Vision, and the plain signal
+        // its base layer is.
+        if (s.Video?.BaseLayer is string baseLayer)
+        {
+            panel.Children.Add(Text(L("Play as", "Показывать как"), quiet: true));
+            panel.Children.Add(Choices(
+                new[] { ("1", "Dolby Vision"), ("0", baseLayer) },
+                s.Settings.DolbyVision ? "1" : "0",
+                value => player.Send("set dolbyVision " + value)));
+        }
+
         if (s.IsHdrSource)
         {
             panel.Children.Add(Text(L("Who fits HDR to the screen", "Кто подгоняет HDR под экран"), quiet: true));
@@ -211,7 +222,8 @@ public sealed partial class MainWindow
             if (v.DolbyVision != null)
             {
                 colour += L($", Dolby Vision profile {v.DolbyVision}", $", Dolby Vision, профиль {v.DolbyVision}");
-                if (v.EnhancementLayer) colour += L(" (base layer only)", " (только базовый слой)");
+                if (!s.PlaysAsDolbyVision) colour += L(" (not used)", " (не используется)");
+                else if (v.EnhancementLayer) colour += L(" (base layer only)", " (только базовый слой)");
             }
             yield return (L("Colour", "Цвет"), colour);
             yield return (L("Decoding", "Декодер"),

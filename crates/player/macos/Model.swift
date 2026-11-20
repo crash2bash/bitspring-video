@@ -22,6 +22,9 @@ struct VideoInfo: Codable, Equatable {
     var maxCll: Double?
     /// "5", "8.1"; nil when the file is not Dolby Vision.
     var dolbyVision: String?
+    /// What a Dolby Vision file is without its metadata ("HDR10", "HLG", "SDR"), when it can
+    /// be played that way; nil otherwise.
+    var baseLayer: String?
     var enhancementLayer: Bool
     var hardware: Bool
 }
@@ -86,6 +89,8 @@ struct SettingsInfo: Codable, Equatable {
     /// "high", "balanced", "fast".
     var quality: String
     var hardwareDecoding: Bool
+    /// A file that is both Dolby Vision and a plain signal is played as Dolby Vision.
+    var dolbyVision: Bool
     var subtitleScale: Double
     var subtitleNits: Double
     /// ISO 639 code, or empty for forced subtitles only.
@@ -96,7 +101,8 @@ struct SettingsInfo: Codable, Equatable {
     var audioDelay: Double
 
     static let standard = SettingsInfo(
-        displayPeak: nil, reportedPeak: 0, quality: "high", hardwareDecoding: true, subtitleScale: 1,
+        displayPeak: nil, reportedPeak: 0, quality: "high", hardwareDecoding: true, dolbyVision: true,
+        subtitleScale: 1,
         subtitleNits: 203, subtitleLanguage: "", audioLanguage: "", audioDelay: 0)
 }
 
@@ -165,13 +171,20 @@ extension Status {
     /// "Dolby Vision", "HDR10+", "HDR10", "HLG", "SDR".
     var formatName: String {
         guard let video else { return "" }
-        if video.dolbyVision != nil { return "Dolby Vision" }
+        if playsAsDolbyVision { return "Dolby Vision" }
         if signal?.hdr10Plus == true { return "HDR10+" }
         switch video.transfer {
         case "PQ": return "HDR10"
         case "HLG": return "HLG"
         default: return "SDR"
         }
+    }
+
+    /// The file is Dolby Vision and is shown as such, not as the plain signal it also is.
+    var playsAsDolbyVision: Bool {
+        guard let video, video.dolbyVision != nil else { return false }
+        // What reached the screen, once something has; until then, what was asked for.
+        return signal?.dolbyVision ?? (video.baseLayer == nil || settings.dolbyVision)
     }
 
     var treatment: Treatment? {

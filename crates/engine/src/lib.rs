@@ -109,6 +109,19 @@ pub struct DolbyVision {
     pub enhancement_layer: bool,
 }
 
+impl DolbyVision {
+    /// What the base layer is when shown without the RPU: "HDR10", "HLG" or "SDR". `None`
+    /// when it cannot stand alone (profile 5, whose base layer is in Dolby's own colours).
+    pub fn base_layer(&self) -> Option<&'static str> {
+        match self.base_layer_compatibility {
+            1 | 6 => Some("HDR10"),
+            2 => Some("SDR"),
+            4 => Some("HLG"),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct MediaInfo {
     pub width: u32,
@@ -1000,6 +1013,13 @@ impl Gpu {
         // SAFETY: ownership of the event moves to the gpu.
         unsafe { ffi::bsv_gpu_subs_push(self.ptr.as_ptr(), event.ptr.as_ptr()) };
         std::mem::forget(event);
+    }
+
+    /// Apply a frame's Dolby Vision RPU (the default), or leave it aside and show the base
+    /// layer as the plain signal it also is. Holds for frames taken from now on.
+    pub fn set_dolby_vision(&mut self, apply: bool) {
+        // SAFETY: plain call on an owned gpu.
+        unsafe { ffi::bsv_gpu_set_dolby_vision(self.ptr.as_ptr(), apply as c_int) };
     }
 
     /// Forget every queued frame: after a seek, or before another file.

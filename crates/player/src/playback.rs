@@ -46,6 +46,8 @@ pub struct Options {
     pub path: String,
     pub hardware: bool,
     pub mode: HdrMode,
+    /// Apply a Dolby Vision file's RPU, or show its base layer as the plain signal it also is.
+    pub dolby_vision: bool,
     pub quality: Quality,
     /// Extra libplacebo options, "key=value,key=value".
     pub renderer_options: String,
@@ -96,6 +98,8 @@ pub enum Command {
         nits: f32,
     },
     SetQuality(Quality),
+    /// Play a Dolby Vision file as Dolby Vision, or as the plain signal its base layer is.
+    SetDolbyVision(bool),
     /// Seconds to hold the picture back against the sound.
     SetAudioDelay(f64),
 }
@@ -941,6 +945,7 @@ fn render_loop(
         }
     };
     gpu.set_options(options.quality, &options.renderer_options)?;
+    gpu.set_dolby_vision(options.dolby_vision);
     gpu.resize(size.0, size.1);
 
     let mut source = Source::open(&options.path)?;
@@ -1151,6 +1156,13 @@ fn render_loop(
                     }
                 }
                 Ok(Command::SetAudioDelay(seconds)) => timeline.audio_delay = seconds,
+                Ok(Command::SetDolbyVision(apply)) => {
+                    gpu.set_dolby_vision(apply);
+                    // Frames already decoded were taken the other way: decode again from here.
+                    if info.dolby_vision.is_some_and(|dv| dv.base_layer().is_some()) {
+                        jump = Some((timeline.position(), None, None));
+                    }
+                }
                 Ok(Command::SetHdrMode(m)) => {
                     mode = m;
                     output = plan(&display, &info.source(), mode);

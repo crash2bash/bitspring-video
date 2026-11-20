@@ -16,6 +16,9 @@ pub struct Preferences {
     /// "high", "balanced", "fast".
     pub quality: String,
     pub hardware_decoding: bool,
+    /// For a file that is both Dolby Vision and a plain signal (HDR10 for profile 8.1): play
+    /// the Dolby Vision version. `false`: play the plain one.
+    pub dolby_vision: bool,
     /// Subtitle text size, 1.0 as styled.
     pub subtitle_scale: f32,
     /// How bright subtitle white is, cd/m².
@@ -37,6 +40,7 @@ impl Default for Preferences {
             display_peak: None,
             quality: "high".into(),
             hardware_decoding: true,
+            dolby_vision: true,
             subtitle_scale: 1.0,
             subtitle_nits: 203.0,
             subtitle_language: String::new(),
@@ -121,6 +125,7 @@ impl Preferences {
             "displayPeak" => self.display_peak = number,
             "quality" => self.quality = value.trim().to_string(),
             "hardwareDecoding" => self.hardware_decoding = matches!(value.trim(), "1" | "true"),
+            "dolbyVision" => self.dolby_vision = matches!(value.trim(), "1" | "true"),
             "subtitleScale" => self.subtitle_scale = number.unwrap_or(1.0),
             "subtitleNits" => self.subtitle_nits = number.unwrap_or(203.0),
             "subtitleLanguage" => self.subtitle_language = value.trim().to_string(),

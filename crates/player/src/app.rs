@@ -210,6 +210,7 @@ impl Running {
             path: path.to_string(),
             hardware: self.hardware,
             mode: self.mode,
+            dolby_vision: self.prefs.dolby_vision,
             quality: self.quality,
             renderer_options: settings.renderer_options.clone(),
             start,
@@ -346,6 +347,7 @@ impl Running {
                 self.send(Command::SetQuality(self.quality));
             }
             "hardwareDecoding" => self.hardware = self.prefs.hardware_decoding,
+            "dolbyVision" => self.send(Command::SetDolbyVision(self.prefs.dolby_vision)),
             "subtitleScale" | "subtitleNits" => self.send(Command::SubtitleLook {
                 scale: self.prefs.subtitle_scale,
                 nits: self.prefs.subtitle_nits,
