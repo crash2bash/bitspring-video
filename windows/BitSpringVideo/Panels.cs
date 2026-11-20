@@ -388,12 +388,13 @@ public sealed partial class MainWindow
                 11, quiet: true)));
 
         // As tall as the window lets it be, so that the last group is not left under a scroll
-        // nothing points at; in a short window it scrolls.
+        // nothing points at; in a short window it scrolls. The margin keeps the flyout, which
+        // moves up when it has no room below the gear, clear of the window's own buttons.
         return new ScrollViewer
         {
             Content = panel,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            MaxHeight = Math.Max(240, Root.ActualHeight - 96),
+            MaxHeight = Math.Max(240, Root.ActualHeight - 128),
         };
     }
 
