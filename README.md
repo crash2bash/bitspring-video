@@ -102,11 +102,14 @@ scripts/package-windows.sh     # the core and its libraries, in target/bundle
 And the application, with the [.NET 8 SDK](https://dotnet.microsoft.com/download):
 
 ```
-dotnet build windows/BitSpringVideo/BitSpringVideo.csproj -c Release -p:Platform=x64 -o target/bundle/BitSpring-Video-windows
+dotnet build windows/BitSpringVideo/BitSpringVideo.csproj -c Release -p:Platform=x64
 ```
 
-`BitSpringVideo.exe` in that folder is the player. Beside it, `bitspring-video.exe` is the same
-player in a bare window, for `--displays`, `--info` and scripted runs.
+That leaves the application in `windows/BitSpringVideo/bin/x64/Release/net8.0-windows10.0.19041.0/win-x64`.
+Copy the contents of `target/bundle/BitSpring-Video-windows` into it: `BitSpringVideo.exe` there
+is the player. Beside it, `bitspring-video.exe` is the same player in a bare window, for
+`--displays`, `--info` and scripted runs. (Do not send the build elsewhere with `-o`: some
+versions of the SDK then lose the windows' compiled markup, and the application stops at start.)
 
 `.github/workflows/windows.yml` does all of this on every push, starts the application on a clip,
 photographs it, and keeps the folder as a download.

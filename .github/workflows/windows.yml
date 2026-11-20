@@ -116,6 +116,10 @@ jobs:
   app:
     runs-on: windows-latest
     timeout-minutes: 20
+    env:
+      # Where `dotnet build` puts the application when left to itself. Asking for another
+      # folder with -o makes some versions of the SDK lose the windows' compiled markup.
+      APP: windows/BitSpringVideo/bin/x64/Release/net8.0-windows10.0.19041.0/win-x64
     steps:
       - uses: actions/checkout@v4
 
@@ -124,7 +128,7 @@ jobs:
           dotnet-version: 8.0.x
 
       - name: Build
-        run: dotnet build windows/BitSpringVideo/BitSpringVideo.csproj -c Release -p:Platform=x64 -o app-out
+        run: dotnet build windows/BitSpringVideo/BitSpringVideo.csproj -c Release -p:Platform=x64
 
       - name: The interface loads
         shell: powershell
@@ -132,7 +136,7 @@ jobs:
           # Without the player's core beside it the application cannot go on, and says so.
           # Reaching that point means its own markup and resources loaded.
           $log = "$PWD\load.log"
-          $app = Start-Process app-out\BitSpringVideo.exe -ArgumentList "--log", $log -PassThru
+          $app = Start-Process "$env:APP\BitSpringVideo.exe" -ArgumentList "--log", $log -PassThru
           $app.WaitForExit(30000) | Out-Null
           if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force }
           $note = if (Test-Path "$log.crash.txt") { Get-Content "$log.crash.txt" -Raw } else { "(it left no note)" }
@@ -143,7 +147,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: app
-          path: app-out
+          path: ${{ env.APP }}
           retention-days: 1
 
   assemble:
