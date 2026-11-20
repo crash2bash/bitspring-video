@@ -36,6 +36,11 @@ const FRAMES_AHEAD: usize = 8;
 const VIDEO_PACKETS_AHEAD: f64 = 1.5;
 /// Longest stretch of silence inserted when a sound track starts later than the picture.
 const MAX_LEADING_SILENCE: f64 = 10.0;
+/// Decoded sound the reading thread may hold beyond what the device's own buffer takes, in
+/// seconds. The device takes nothing until the first picture is on screen, and a decoder may
+/// want a second or more of the file before it gives that picture: the sound stored alongside
+/// has to go somewhere meanwhile, or the reading stops and the picture never comes.
+const SOUND_WAITING: f64 = 20.0;
 
 pub struct Options {
     pub path: String,
@@ -440,6 +445,10 @@ struct SoundPath {
     decoder: AudioDecoder,
     /// The time base has been declared for the current position.
     based: bool,
+    /// Decoded sound the device's buffer had no room for yet, oldest first.
+    waiting: VecDeque<f32>,
+    /// The file has no more sound: the device is told once `waiting` has gone through.
+    ending: bool,
 }
 
 impl SoundPath {
@@ -452,7 +461,27 @@ impl SoundPath {
             output,
             decoder,
             based: false,
+            waiting: VecDeque::new(),
+            ending: false,
         })
+    }
+
+    /// Hand the device whatever it has room for, and tell it when the last of the sound is in.
+    fn settle(&mut self) {
+        settle(&mut self.output, &mut self.waiting);
+        if self.ending && self.waiting.is_empty() {
+            self.output.set_ended();
+            self.ending = false;
+        }
+    }
+
+    /// Forget everything not yet played: the step before sound from a new position.
+    fn flush(&mut self) {
+        self.decoder.flush();
+        self.output.flush();
+        self.waiting.clear();
+        self.ending = false;
+        self.based = false;
     }
 
     /// Move everything the decoder has ready into the device's buffer. `start` is where
@@ -481,7 +510,7 @@ impl SoundPath {
                     let silence = vec![0.0f32; (gap * rate) as usize * channels];
                     self.output.set_base(start);
                     self.based = true;
-                    if !write_all(&mut self.output, &silence, generation, shared) {
+                    if !queue(&mut self.output, &mut self.waiting, &silence, generation, shared) {
                         return Ok(());
                     }
                 }
@@ -490,26 +519,46 @@ impl SoundPath {
                     self.based = true;
                 }
             }
-            if !write_all(&mut self.output, data, generation, shared) {
+            if !queue(&mut self.output, &mut self.waiting, data, generation, shared) {
                 return Ok(());
             }
         }
     }
 }
 
-/// Queue samples, waiting for room. Returns `false` if a seek or quit interrupted it.
-fn write_all(output: &mut AudioOutput, mut data: &[f32], generation: u64, shared: &Shared) -> bool {
-    while !data.is_empty() {
-        let taken = output.write(data);
-        data = &data[taken..];
+/// Move waiting sound into the device's buffer, as much as it has room for.
+fn settle(output: &mut AudioOutput, waiting: &mut VecDeque<f32>) {
+    while !waiting.is_empty() {
+        let taken = output.write(waiting.make_contiguous());
         if taken == 0 {
-            if shared.stale(generation) {
-                return false;
-            }
-            thread::sleep(Duration::from_millis(2));
+            return;
         }
+        waiting.drain(..taken);
     }
-    true
+}
+
+/// Add samples behind those already waiting for the device. Waits only when more than
+/// [`SOUND_WAITING`] seconds are held; returns `false` if a seek or quit interrupted that.
+fn queue(
+    output: &mut AudioOutput,
+    waiting: &mut VecDeque<f32>,
+    data: &[f32],
+    generation: u64,
+    shared: &Shared,
+) -> bool {
+    let format = output.format();
+    let limit = (SOUND_WAITING * format.sample_rate as f64) as usize * format.channels as usize;
+    waiting.extend(data);
+    loop {
+        settle(output, waiting);
+        if waiting.len() <= limit {
+            return true;
+        }
+        if shared.stale(generation) {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(2));
+    }
 }
 
 /// Track numbers from here up stand for subtitle files next to the video, not streams inside it.
@@ -655,10 +704,20 @@ fn read_loop(mut source: Source, reading: Reading) {
         if shared.quit.load(Ordering::Relaxed) {
             return;
         }
+        // Sound held back while the device was full moves on with every packet read.
+        if let Some(path) = &mut sound {
+            path.settle();
+        }
         let command = if idle {
             match commands.recv_timeout(Duration::from_millis(50)) {
                 Ok(c) => Some(c),
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    // Nothing left to read, but the end of the sound may still be waiting.
+                    if let Some(path) = &mut sound {
+                        path.settle();
+                    }
+                    continue;
+                }
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
             }
         } else {
@@ -720,9 +779,7 @@ fn read_loop(mut source: Source, reading: Reading) {
             // Sound is silenced first: once the video thread sees the flush, the device's clock
             // no longer reports the old position.
             if let Some(path) = &mut sound {
-                path.decoder.flush();
-                path.output.flush();
-                path.based = false;
+                path.flush();
             }
             video.clear();
             video.push_control(Item::Flush { generation, to });
@@ -758,7 +815,8 @@ fn read_loop(mut source: Source, reading: Reading) {
                 if let Some(path) = &mut sound {
                     let _ = path.decoder.send(None);
                     let _ = path.pump(start, generation, &shared);
-                    path.output.set_ended();
+                    path.ending = true;
+                    path.settle();
                 }
                 idle = true;
                 None

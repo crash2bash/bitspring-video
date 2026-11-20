@@ -47,8 +47,9 @@ receiver, remembering where a film was stopped.
 
 Dolby Vision: the RPU is applied by libplacebo (profiles 5 and 8; profile 7 plays its base layer
 with the RPU, the enhancement layer is not decoded). The output is HDR10 mapped to the display.
-No player outside licensed devices can switch a TV into its Dolby Vision mode. This path has not
-yet been tried on a real Dolby Vision file.
+No player outside licensed devices can switch a TV into its Dolby Vision mode. Tried on
+profile 8.1 (a streaming-service series): it plays with the RPU applied. Profiles 5 and 7 have
+not been tried on real files, and the result has not been compared with a licensed device.
 
 ## Layout
 
