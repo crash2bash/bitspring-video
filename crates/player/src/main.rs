@@ -9,14 +9,18 @@ use std::process::ExitCode;
 use bsv_display::policy::{HdrMode, plan};
 use bsv_engine::{Decoded, LogLevel, Quality, Read, Source, VideoDecoder};
 
-#[cfg(target_os = "macos")]
+// Playback exists where there is a renderer for the system: the Mac and Windows.
+#[cfg(any(target_os = "macos", windows))]
 mod app;
 mod language;
-#[cfg(target_os = "macos")]
+mod launch;
+#[cfg(any(target_os = "macos", windows))]
 mod playback;
 mod prefs;
 mod report;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
+mod surface;
+#[cfg(any(target_os = "macos", windows))]
 mod ui;
 
 const USAGE: &str = "\
@@ -207,32 +211,34 @@ fn run() -> Result<(), String> {
         return print_info(&path, &args);
     }
 
-    #[cfg(target_os = "macos")]
-    let result = {
-        let script = if args.script.is_empty() {
-            Vec::new()
-        } else {
-            app::parse_script(&args.script)?
-        };
-        app::run(app::Settings {
-            path: args.path,
-            preferences: args
-                .settings
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(prefs::Preferences::default_path),
-            hardware: args.hardware,
-            mode: args.mode,
-            quality: args.quality,
-            audio_delay: args.audio_delay,
-            renderer_options: args.renderer_options,
-            start: args.start,
-            sound: args.sound,
-            diagnostics: args.log >= LogLevel::Info,
-            script,
-        })
+    let script = if args.script.is_empty() {
+        Vec::new()
+    } else {
+        launch::parse_script(&args.script)?
     };
-    #[cfg(not(target_os = "macos"))]
-    let result = Err("playback on this system is not built yet".into());
+    let settings = launch::Settings {
+        path: args.path,
+        preferences: args
+            .settings
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(prefs::Preferences::default_path),
+        hardware: args.hardware,
+        mode: args.mode,
+        quality: args.quality,
+        audio_delay: args.audio_delay,
+        renderer_options: args.renderer_options,
+        start: args.start,
+        sound: args.sound,
+        diagnostics: args.log >= LogLevel::Info,
+        script,
+    };
+    #[cfg(any(target_os = "macos", windows))]
+    let result = app::run(settings);
+    #[cfg(not(any(target_os = "macos", windows)))]
+    let result = {
+        let _ = settings;
+        Err("playback on this system is not built yet".into())
+    };
     result
 }
 

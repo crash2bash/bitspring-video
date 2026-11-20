@@ -134,7 +134,7 @@ struct LayerPtr(*mut c_void);
 unsafe impl Send for LayerPtr {}
 
 impl Player {
-    /// Start playing into a `CAMetalLayer`.
+    /// Start playing into a `CAMetalLayer` (the Mac) or a window, by its handle (Windows).
     ///
     /// # Safety
     /// `layer` must stay alive until the returned `Player` is dropped.
@@ -843,8 +843,11 @@ fn render_loop(
     commands: Receiver<Command>,
     status: &Mutex<Status>,
 ) -> Result<(), bsv_engine::Error> {
-    // SAFETY: `Player::start`'s caller keeps the layer alive until this thread is joined.
+    // SAFETY: `Player::start`'s caller keeps the layer (or window) alive until this thread is joined.
+    #[cfg(target_os = "macos")]
     let mut gpu = unsafe { Gpu::for_metal_layer(layer) }?;
+    #[cfg(windows)]
+    let mut gpu = unsafe { Gpu::for_window(layer) }?;
     gpu.set_options(options.quality, &options.renderer_options)?;
     gpu.resize(size.0, size.1);
 

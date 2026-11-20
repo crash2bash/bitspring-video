@@ -4,7 +4,9 @@
 //! commands. The state's shape is mirrored by the `Status` struct in `macos/Model.swift`: keep
 //! the two in step.
 
-use std::ffi::{CStr, CString, c_char, c_void};
+use std::ffi::c_void;
+#[cfg(target_os = "macos")]
+use std::ffi::{CStr, CString, c_char};
 use std::sync::{Mutex, OnceLock};
 
 use bsv_display::policy::{HdrMode, Primaries, SourceTransfer};
@@ -15,6 +17,7 @@ use serde::Serialize;
 use crate::playback::{self, Command};
 use crate::prefs::Preferences;
 
+#[cfg(target_os = "macos")]
 unsafe extern "C" {
     fn bsv_app_prepare();
     fn bsv_ui_attach(
@@ -30,7 +33,10 @@ unsafe extern "C" {
 /// Get ready for files opened from Finder. Call once, before the event loop starts.
 pub fn prepare() {
     // SAFETY: registers an observer; no preconditions beyond being called on the main thread.
-    unsafe { bsv_app_prepare() };
+    #[cfg(target_os = "macos")]
+    unsafe {
+        bsv_app_prepare()
+    };
 }
 
 /// Commands the interface has sent and nobody has taken yet.
@@ -38,6 +44,7 @@ static INBOX: Mutex<Vec<String>> = Mutex::new(Vec::new());
 /// Wakes the event loop so a command is acted on at once.
 static WAKE: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
 
+#[cfg(target_os = "macos")]
 extern "C" fn receive(command: *const c_char, _user: *mut c_void) {
     // SAFETY: the interface passes a NUL-terminated string valid for this call.
     let text = unsafe { CStr::from_ptr(command) }
@@ -99,30 +106,41 @@ pub fn take_requests() -> Vec<Request> {
     texts.iter().filter_map(|t| parse(t)).collect()
 }
 
+/// The controls drawn over the picture. On the Mac that is the SwiftUI interface; elsewhere
+/// there is none yet, and this stands in for it: the window's keys and title do the work.
 pub struct Interface {
+    #[cfg(target_os = "macos")]
     ptr: *mut c_void,
+    #[cfg(target_os = "macos")]
     last: String,
 }
 
 impl Interface {
-    /// Put the controls into a window, above everything already in `ns_view`.
+    /// Put the controls into a window, above everything already in `view`.
     ///
     /// # Safety
-    /// `ns_view` must be the live content view of a window, and this must be the main thread.
-    pub unsafe fn attach(
-        ns_view: *mut c_void,
-        wake: impl Fn() + Send + Sync + 'static,
-    ) -> Interface {
+    /// `view` must be the live content view of a window, and this must be the main thread.
+    #[cfg(target_os = "macos")]
+    pub unsafe fn attach(view: *mut c_void, wake: impl Fn() + Send + Sync + 'static) -> Interface {
         let _ = WAKE.set(Box::new(wake));
         // SAFETY: upheld by the caller.
-        let ptr = unsafe { bsv_ui_attach(ns_view, receive, std::ptr::null_mut()) };
+        let ptr = unsafe { bsv_ui_attach(view, receive, std::ptr::null_mut()) };
         Interface {
             ptr,
             last: String::new(),
         }
     }
 
+    /// # Safety
+    /// None to uphold here: there is nothing to attach.
+    #[cfg(not(target_os = "macos"))]
+    pub unsafe fn attach(_view: *mut c_void, wake: impl Fn() + Send + Sync + 'static) -> Interface {
+        let _ = WAKE.set(Box::new(wake));
+        Interface {}
+    }
+
     /// Show this state. Does nothing when it is what the interface already has.
+    #[cfg(target_os = "macos")]
     pub fn show(&mut self, state: &State) {
         let Ok(json) = serde_json::to_string(state) else {
             return;
@@ -137,15 +155,23 @@ impl Interface {
         self.last = json;
     }
 
-    /// Interface-only actions for scripted runs: "panel", "pin".
+    #[cfg(not(target_os = "macos"))]
+    pub fn show(&mut self, _state: &State) {}
+
+    /// Interface-only actions for scripted runs: "panel", "settings", "pin".
+    #[cfg(target_os = "macos")]
     pub fn perform(&self, action: &str) {
         if let Ok(c) = CString::new(action) {
             // SAFETY: as in `show`.
             unsafe { bsv_ui_perform(self.ptr, c.as_ptr()) };
         }
     }
+
+    #[cfg(not(target_os = "macos"))]
+    pub fn perform(&self, _action: &str) {}
 }
 
+#[cfg(target_os = "macos")]
 impl Drop for Interface {
     fn drop(&mut self) {
         // SAFETY: we own the interface.

@@ -22,6 +22,17 @@ fn nits(v: f32) -> String {
     }
 }
 
+/// "1:02:03" or "2:03".
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+pub fn clock(seconds: f64) -> String {
+    let s = seconds.max(0.0) as u64;
+    if s >= 3600 {
+        format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
+    } else {
+        format!("{}:{:02}", s / 60, s % 60)
+    }
+}
+
 pub fn display(d: &Display) -> String {
     let mut out = String::new();
     let connection = d

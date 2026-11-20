@@ -217,8 +217,15 @@ unsafe extern "C" {
     ) -> c_int;
     pub fn bsv_audio_flush(a: *mut bsv_audio);
 
+    #[cfg(target_os = "macos")]
     pub fn bsv_gpu_create_metal(
         layer: *mut c_void,
+        error: *mut c_char,
+        error_len: c_int,
+    ) -> *mut bsv_gpu;
+    #[cfg(windows)]
+    pub fn bsv_gpu_create_win32(
+        hwnd: *mut c_void,
         error: *mut c_char,
         error_len: c_int,
     ) -> *mut bsv_gpu;

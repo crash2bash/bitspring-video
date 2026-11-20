@@ -27,7 +27,11 @@
 #include <libplacebo/options.h>
 #include <libplacebo/renderer.h>
 #include <libplacebo/utils/frame_queue.h>
+#if defined(_WIN32)
+#include <libplacebo/d3d11.h>
+#else
 #include <libplacebo/vulkan.h>
+#endif
 
 #define PL_LIBAV_IMPLEMENTATION 1
 #include <libplacebo/utils/libav.h>
@@ -1066,9 +1070,16 @@ void bsv_audio_flush(bsv_audio *a)
 
 struct bsv_gpu {
     pl_log log;
+    // The graphics API underneath: Direct3D 11 on Windows, Vulkan elsewhere (over Metal on the
+    // Mac). Everything after `gpu` is the same for both.
+#if defined(_WIN32)
+    pl_d3d11 d3d;
+#else
     pl_vk_inst inst;
     VkSurfaceKHR surface;
     pl_vulkan vk;
+#endif
+    pl_gpu gpu;
     pl_swapchain sw;
     pl_renderer rr;
     pl_queue queue;
@@ -1099,6 +1110,13 @@ struct bsv_gpu {
 // Plain-text subtitles (SRT, WebVTT, MP4 text) carry no styling of their own. This is theirs:
 // laid out for a 1080-line picture and scaled with it, slightly off-white so a line of text is
 // not the brightest thing in a dark scene.
+// A plain, well-made face that every installation of the system has.
+#if defined(_WIN32)
+#define BSV_SUBTITLE_FONT "Segoe UI"
+#else
+#define BSV_SUBTITLE_FONT "Helvetica Neue"
+#endif
+
 static const char DEFAULT_ASS_HEADER[] =
     "[Script Info]\n"
     "ScriptType: v4.00+\n"
@@ -1111,7 +1129,7 @@ static const char DEFAULT_ASS_HEADER[] =
     "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
     "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, "
     "Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
-    "Style: Default,Helvetica Neue,60,&H00E6E6E6,&H00E6E6E6,&H00101010,&H78000000,"
+    "Style: Default," BSV_SUBTITLE_FONT ",60,&H00E6E6E6,&H00E6E6E6,&H00101010,&H78000000,"
     "0,0,0,0,100,100,0,0,1,2.6,1.2,2,140,140,62,1\n"
     "\n"
     "[Events]\n"
@@ -1187,7 +1205,7 @@ void bsv_gpu_subs_begin(bsv_gpu *g, int kind, const char *header, int header_len
             g->subs_kind = 0;
             return;
         }
-        ass_set_fonts(g->ass_renderer, NULL, "Helvetica Neue", ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
+        ass_set_fonts(g->ass_renderer, NULL, BSV_SUBTITLE_FONT, ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
     }
     g->ass_track = ass_new_track(g->ass);
     if (!g->ass_track) {
@@ -1261,7 +1279,7 @@ static bool subs_buffer(bsv_gpu *g, int w, int h)
 
 static bool subs_upload(bsv_gpu *g)
 {
-    pl_gpu gpu = g->vk->gpu;
+    pl_gpu gpu = g->gpu;
     pl_fmt fmt = pl_find_named_fmt(gpu, "rgba8");
     if (!fmt)
         return false;
@@ -1431,12 +1449,15 @@ void bsv_gpu_destroy(bsv_gpu *g)
     if (!g)
         return;
     subs_free(g);
-    if (g->vk)
-        pl_tex_destroy(g->vk->gpu, &g->sub_tex);
+    if (g->gpu)
+        pl_tex_destroy(g->gpu, &g->sub_tex);
     pl_queue_destroy(&g->queue);
     pl_renderer_destroy(&g->rr);
     pl_options_free(&g->opts);
     pl_swapchain_destroy(&g->sw);
+#if defined(_WIN32)
+    pl_d3d11_destroy(&g->d3d);
+#else
     pl_vulkan_destroy(&g->vk);
     if (g->surface && g->inst) {
         PFN_vkDestroySurfaceKHR destroy =
@@ -1445,39 +1466,39 @@ void bsv_gpu_destroy(bsv_gpu *g)
             destroy(g->inst->instance, g->surface, NULL);
     }
     pl_vk_inst_destroy(&g->inst);
+#endif
     pl_log_destroy(&g->log);
     free(g);
 }
 
-// Everything after the platform surface exists.
-static bsv_gpu *finish_gpu(bsv_gpu *g, char *error, int error_len)
+static bsv_gpu *new_gpu(void)
 {
-    g->vk = pl_vulkan_create(g->log, pl_vulkan_params(
-        .instance = g->inst->instance,
-        .get_proc_addr = g->inst->get_proc_addr,
-        .surface = g->surface,
-    ));
-    if (!g->vk) {
-        set_error(error, error_len, "no usable Vulkan device", 0);
-        goto fail;
+    bsv_gpu *g = calloc(1, sizeof(*g));
+    if (g) {
+        g->log = pl_log_create(PL_API_VER, pl_log_params(
+            .log_cb = log_from_placebo,
+            .log_level = placebo_level(),
+        ));
     }
-    g->sw = pl_vulkan_create_swapchain(g->vk, pl_vulkan_swapchain_params(
-        .surface = g->surface,
-        .present_mode = VK_PRESENT_MODE_FIFO_KHR,
-    ));
+    return g;
+}
+
+// Everything after the device and its swapchain exist: the same on every system.
+static bsv_gpu *finish_gpu(bsv_gpu *g, const char *api, char *error, int error_len)
+{
     if (!g->sw) {
         set_error(error, error_len, "cannot create the swapchain", 0);
         goto fail;
     }
-    g->rr = pl_renderer_create(g->log, g->vk->gpu);
-    g->queue = pl_queue_create(g->vk->gpu);
+    g->rr = pl_renderer_create(g->log, g->gpu);
+    g->queue = pl_queue_create(g->gpu);
     g->opts = pl_options_alloc(g->log);
     if (!g->rr || !g->queue || !g->opts) {
         set_error(error, error_len, "cannot create the renderer", 0);
         goto fail;
     }
     pl_options_reset(g->opts, &pl_render_high_quality_params);
-    emitf(3, "renderer: libplacebo %s on %s", pl_version(), g->vk->gpu->glsl.compute ? "Vulkan (compute)" : "Vulkan");
+    emitf(3, "renderer: libplacebo %s on %s%s", pl_version(), api, g->gpu->glsl.compute ? " (compute)" : "");
     return g;
 
 fail:
@@ -1488,13 +1509,9 @@ fail:
 #if defined(__APPLE__)
 bsv_gpu *bsv_gpu_create_metal(void *layer, char *error, int error_len)
 {
-    bsv_gpu *g = calloc(1, sizeof(*g));
+    bsv_gpu *g = new_gpu();
     if (!g)
         return NULL;
-    g->log = pl_log_create(PL_API_VER, pl_log_params(
-        .log_cb = log_from_placebo,
-        .log_level = placebo_level(),
-    ));
 
     const char *extensions[] = { VK_KHR_SURFACE_EXTENSION_NAME, VK_EXT_METAL_SURFACE_EXTENSION_NAME };
     g->inst = pl_vk_inst_create(g->log, pl_vk_inst_params(
@@ -1517,13 +1534,47 @@ bsv_gpu *bsv_gpu_create_metal(void *layer, char *error, int error_len)
         bsv_gpu_destroy(g);
         return NULL;
     }
-    return finish_gpu(g, error, error_len);
+    g->vk = pl_vulkan_create(g->log, pl_vulkan_params(
+        .instance = g->inst->instance,
+        .get_proc_addr = g->inst->get_proc_addr,
+        .surface = g->surface,
+    ));
+    if (!g->vk) {
+        set_error(error, error_len, "no usable Vulkan device", 0);
+        bsv_gpu_destroy(g);
+        return NULL;
+    }
+    g->gpu = g->vk->gpu;
+    g->sw = pl_vulkan_create_swapchain(g->vk, pl_vulkan_swapchain_params(
+        .surface = g->surface,
+        .present_mode = VK_PRESENT_MODE_FIFO_KHR,
+    ));
+    return finish_gpu(g, "Vulkan", error, error_len);
 }
-#else
-bsv_gpu *bsv_gpu_create_metal(void *layer, char *error, int error_len)
+#endif
+
+#if defined(_WIN32)
+// Direct3D 11 is the dependable way to an HDR surface on Windows: the swapchain is told the
+// colour space (BT.2020 PQ) and the HDR10 metadata, and the system's compositor takes it from
+// there. A machine without a GPU gets the software device, so the player still starts.
+bsv_gpu *bsv_gpu_create_win32(void *hwnd, char *error, int error_len)
 {
-    set_error(error, error_len, "Metal surfaces exist only on Apple systems", 0);
-    return NULL;
+    bsv_gpu *g = new_gpu();
+    if (!g)
+        return NULL;
+    g->d3d = pl_d3d11_create(g->log, pl_d3d11_params(
+        .allow_software = true,
+    ));
+    if (!g->d3d) {
+        set_error(error, error_len, "cannot start Direct3D 11", 0);
+        bsv_gpu_destroy(g);
+        return NULL;
+    }
+    g->gpu = g->d3d->gpu;
+    g->sw = pl_d3d11_create_swapchain(g->d3d, pl_d3d11_swapchain_params(
+        .window = (HWND) hwnd,
+    ));
+    return finish_gpu(g, g->d3d->software ? "Direct3D 11 (software)" : "Direct3D 11", error, error_len);
 }
 #endif
 

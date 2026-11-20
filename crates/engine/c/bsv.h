@@ -192,8 +192,12 @@ struct bsv_render_stats {
     double fps;             // estimated from the frames' timestamps
 };
 
-// layer: a CAMetalLayer*. The caller keeps it alive for the gpu's lifetime.
+// One of these exists, according to the system the bridge was built for. The caller keeps
+// the layer or window alive for the gpu's lifetime.
+//   layer: a CAMetalLayer*         (Apple systems)
+//   hwnd:  a window handle, HWND   (Windows)
 bsv_gpu *bsv_gpu_create_metal(void *layer, char *error, int error_len);
+bsv_gpu *bsv_gpu_create_win32(void *hwnd, char *error, int error_len);
 void bsv_gpu_destroy(bsv_gpu *g);
 void bsv_gpu_resize(bsv_gpu *g, int width, int height);
 

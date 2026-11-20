@@ -5,67 +5,34 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use bsv_display::policy::HdrMode;
-use bsv_display::{Display, LuminanceSource, OsReport};
+use bsv_display::{Display, HdrStatus, Luminance, LuminanceSource, OsReport};
 use bsv_engine::{Quality, Transfer};
-use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::event::WindowEvent;
+#[cfg(not(target_os = "macos"))]
+use winit::event::{ElementState, MouseButton};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+#[cfg(not(target_os = "macos"))]
+use winit::keyboard::{Key, ModifiersState, NamedKey};
+#[cfg(target_os = "macos")]
 use winit::platform::macos::{MonitorHandleExtMacOS, WindowAttributesExtMacOS};
+#[cfg(windows)]
+use winit::platform::windows::MonitorHandleExtWindows;
 use winit::window::{Fullscreen, Theme, Window, WindowId};
+
+use crate::launch::Settings;
 
 use crate::playback::{Command, Options, Player};
 use crate::prefs::Preferences;
 use crate::report;
+use crate::surface::Surface;
 use crate::ui::{self, Interface, Playing, Request, State, View};
 
 /// How often the display is asked again whether HDR is on (it can be switched while we play).
 const DISPLAY_POLL: Duration = Duration::from_millis(1000);
 /// How often the interface is told the player's state.
 const INTERFACE_REFRESH: Duration = Duration::from_millis(100);
-
-/// What the command line set, applied to every file opened in this run.
-pub struct Settings {
-    pub path: Option<String>,
-    /// Where preferences are kept.
-    pub preferences: PathBuf,
-    /// Choices made on the command line: they hold for this run and are not saved.
-    pub hardware: Option<bool>,
-    pub mode: Option<HdrMode>,
-    pub quality: Option<Quality>,
-    pub audio_delay: Option<f64>,
-    pub renderer_options: String,
-    pub start: f64,
-    pub sound: bool,
-    /// Print the clock's state once a second.
-    pub diagnostics: bool,
-    pub script: Vec<Step>,
-}
-
-/// One timed command of a test script: "2:pause", "5:seek+10", "9:quit".
-pub struct Step {
-    pub at: f64,
-    pub action: String,
-}
-
-pub fn parse_script(text: &str) -> Result<Vec<Step>, String> {
-    text.split(',')
-        .map(|part| {
-            let (at, action) = part
-                .split_once(':')
-                .ok_or(format!("\"{part}\" is not time:command"))?;
-            let at = at
-                .trim()
-                .parse()
-                .map_err(|_| format!("\"{at}\" is not a time in seconds"))?;
-            Ok(Step {
-                at,
-                action: action.trim().to_string(),
-            })
-        })
-        .collect()
-}
 
 /// One file being played.
 struct Session {
@@ -89,7 +56,7 @@ struct Running {
     // Field order is drop order: playback stops before the interface, the layer and the window go.
     session: Option<Session>,
     interface: Interface,
-    layer: raw_window_metal::Layer,
+    surface: Surface,
     window: Window,
     display: Display,
     /// Why the last file could not be played, shown on the empty screen.
@@ -116,6 +83,11 @@ struct App {
     last_display_poll: Instant,
     last_clock_report: Instant,
     failure: Option<String>,
+    // Without a drawn interface the window reads the keyboard and the mouse itself.
+    #[cfg(not(target_os = "macos"))]
+    modifiers: ModifiersState,
+    #[cfg(not(target_os = "macos"))]
+    last_click: Option<Instant>,
 }
 
 pub fn run(settings: Settings) -> Result<(), String> {
@@ -129,6 +101,10 @@ pub fn run(settings: Settings) -> Result<(), String> {
         last_display_poll: Instant::now(),
         last_clock_report: Instant::now(),
         failure: None,
+        #[cfg(not(target_os = "macos"))]
+        modifiers: ModifiersState::empty(),
+        #[cfg(not(target_os = "macos"))]
+        last_click: None,
     };
     // The interface wakes the loop when it has a command, so a click is acted on at once.
     WAKE.with(|wake| *wake.borrow_mut() = Some(proxy));
@@ -151,108 +127,6 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
-// ---- The layer --------------------------------------------------------------------------------
-
-/// An `NSString` for a short ASCII literal.
-fn ns_string(text: &std::ffi::CStr) -> objc2::rc::Retained<objc2::runtime::NSObject> {
-    // SAFETY: `stringWithUTF8String:` copies a valid NUL-terminated string.
-    unsafe { objc2::msg_send![objc2::class!(NSString), stringWithUTF8String: text.as_ptr()] }
-}
-
-/// Tell Core Animation whether the layer's content goes above SDR white.
-///
-/// MoltenVK sets the older `wantsExtendedDynamicRangeContent` when the swapchain turns HDR, but
-/// current macOS only gives a layer headroom once `preferredDynamicRange` says "high". Without
-/// this the picture is quietly held at SDR brightness although every other setting says HDR.
-fn set_layer_dynamic_range(layer: &raw_window_metal::Layer, hdr: bool) {
-    use objc2::msg_send;
-    use objc2::runtime::AnyObject;
-    // SAFETY: the pointer is a live CAMetalLayer; the property is set only where it exists.
-    unsafe {
-        let obj = layer.as_ptr().as_ptr() as *mut AnyObject;
-        let responds: bool =
-            msg_send![obj, respondsToSelector: objc2::sel!(setPreferredDynamicRange:)];
-        if responds {
-            let value = ns_string(if hdr { c"high" } else { c"standard" });
-            let _: () =
-                msg_send![obj, setValue: &*value, forKey: &*ns_string(c"preferredDynamicRange")];
-        }
-    }
-}
-
-/// Show or hide the video layer. Hidden, the window's black shows instead of whatever frame a
-/// finished session left behind.
-fn set_layer_hidden(layer: &raw_window_metal::Layer, hidden: bool) {
-    use objc2::msg_send;
-    use objc2::runtime::AnyObject;
-    // SAFETY: the pointer is a live CAMetalLayer; `hidden` is an ordinary layer property.
-    unsafe {
-        let obj = layer.as_ptr().as_ptr() as *mut AnyObject;
-        let _: () = msg_send![obj, setHidden: hidden];
-    }
-}
-
-/// What Core Animation has been told about our layer: the proof that HDR really is requested.
-fn layer_state(layer: &raw_window_metal::Layer) -> String {
-    use objc2::msg_send;
-    use objc2::runtime::AnyObject;
-    use std::ffi::{CStr, c_char, c_void};
-
-    /// Opaque, but the Objective-C runtime checks its name on every message.
-    #[repr(C)]
-    struct CGColorSpace([u8; 0]);
-    // SAFETY: matches the encoding of `CGColorSpaceRef`.
-    unsafe impl objc2::encode::RefEncode for CGColorSpace {
-        const ENCODING_REF: objc2::encode::Encoding =
-            objc2::encode::Encoding::Pointer(&objc2::encode::Encoding::Struct("CGColorSpace", &[]));
-    }
-
-    #[link(name = "CoreGraphics", kind = "framework")]
-    unsafe extern "C" {
-        fn CGColorSpaceCopyName(space: *const CGColorSpace) -> *const c_void;
-    }
-    #[link(name = "CoreFoundation", kind = "framework")]
-    unsafe extern "C" {
-        fn CFStringGetCString(s: *const c_void, buf: *mut c_char, len: isize, encoding: u32) -> u8;
-        fn CFRelease(cf: *const c_void);
-    }
-
-    // SAFETY: the pointer is a live CAMetalLayer and these are plain property reads.
-    unsafe {
-        let obj = layer.as_ptr().as_ptr() as *mut AnyObject;
-        let edr: bool = msg_send![obj, wantsExtendedDynamicRangeContent];
-        let metadata: *mut AnyObject = msg_send![obj, EDRMetadata];
-        let space: *const CGColorSpace = msg_send![obj, colorspace];
-        let mut name = String::from("none");
-        if !space.is_null() {
-            let cf = CGColorSpaceCopyName(space);
-            if !cf.is_null() {
-                let mut buf = [0 as c_char; 128];
-                if CFStringGetCString(cf, buf.as_mut_ptr(), buf.len() as isize, 0x0800_0100) != 0 {
-                    name = CStr::from_ptr(buf.as_ptr()).to_string_lossy().into_owned();
-                }
-                CFRelease(cf);
-            }
-        }
-        let name = name.trim_start_matches("kCGColorSpace");
-        let mut text = format!(
-            "colour space {name}, extended range {}",
-            if edr { "requested" } else { "off" }
-        );
-        if !metadata.is_null() {
-            // "CAEDRMetadata <0x...> display min nits: 0.000200, max nits: 1316.604370"
-            let description: objc2::rc::Retained<objc2::runtime::NSObject> =
-                msg_send![metadata, debugDescription];
-            let c: *const c_char = msg_send![&*description, UTF8String];
-            let description = CStr::from_ptr(c).to_string_lossy();
-            if let Some((_, range)) = description.split_once("display ") {
-                text += &format!(", HDR metadata: {range}");
-            }
-        }
-        text
-    }
-}
-
 // ---- The display ------------------------------------------------------------------------------
 
 /// Extended-range headroom the system is giving right now, 1.0 when there is none.
@@ -272,14 +146,46 @@ fn without_live_state(display: &Display) -> Display {
     d
 }
 
-/// The display the window is on, falling back to the main one.
-fn display_of(window: &Window) -> Option<Display> {
-    let all = bsv_display::displays().ok()?;
+/// The display the window is on, falling back to the main one, and to a plain SDR display
+/// when the system will not describe any (a remote session, a machine without a monitor).
+fn display_of(window: &Window) -> Display {
+    #[cfg(target_os = "macos")]
     let id = window.current_monitor().map(|m| m.native_id() as u64);
+    #[cfg(windows)]
+    let id = window.current_monitor().map(|m| m.hmonitor() as u64);
+    let all = bsv_display::displays().unwrap_or_default();
     all.iter()
         .find(|d| Some(d.id) == id)
         .cloned()
         .or_else(|| all.into_iter().next())
+        .unwrap_or_else(|| {
+            let size = window
+                .current_monitor()
+                .map(|m| m.size())
+                .unwrap_or_default();
+            let refresh = window
+                .current_monitor()
+                .and_then(|m| m.refresh_rate_millihertz());
+            Display {
+                id: id.unwrap_or(0),
+                name: "Display".into(),
+                builtin: false,
+                connection: None,
+                width: size.width,
+                height: size.height,
+                refresh_hz: refresh.map_or(60.0, |r| r as f64 / 1000.0),
+                wide_gamut: false,
+                hdr: HdrStatus::Unsupported,
+                luminance: Luminance {
+                    peak_nits: 203.0,
+                    min_nits: None,
+                    max_frame_avg_nits: None,
+                    source: LuminanceSource::Assumed,
+                },
+                edid: None,
+                os: OsReport::Unknown,
+            }
+        })
 }
 
 // ---- The application --------------------------------------------------------------------------
@@ -292,7 +198,7 @@ impl Running {
         self.error = None;
         // The last file's final frame is still on the layer: keep it out of sight until this
         // file's first frame replaces it.
-        set_layer_hidden(&self.layer, true);
+        self.surface.set_hidden(true);
 
         let file_name = Path::new(path)
             .file_name()
@@ -321,7 +227,7 @@ impl Running {
         // session before starting another on the same layer.
         let player = unsafe {
             Player::start(
-                self.layer.as_ptr().as_ptr(),
+                self.surface.pointer(),
                 (size.width, size.height),
                 self.shown_display(),
                 options,
@@ -352,6 +258,42 @@ impl Running {
         } else {
             0.0
         }
+    }
+
+    /// The command that steps to the next subtitle track, ending with none; and to the next
+    /// sound track, going round. (The Mac's interface works these out itself.)
+    #[cfg(not(target_os = "macos"))]
+    fn next_subtitles(&self) -> Option<Command> {
+        use bsv_engine::TrackKind;
+        let status = self.session.as_ref()?.player.status();
+        let ids: Vec<i32> = status
+            .tracks
+            .iter()
+            .filter(|t| t.kind == TrackKind::Subtitle)
+            .map(|t| t.index)
+            .collect();
+        let next = match status
+            .subtitle_track
+            .and_then(|now| ids.iter().position(|&i| i == now))
+        {
+            Some(at) => ids.get(at + 1).copied(),
+            None => ids.first().copied(),
+        };
+        (!ids.is_empty()).then_some(Command::SelectSubtitle(next))
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn next_sound(&self) -> Option<Command> {
+        use bsv_engine::TrackKind;
+        let status = self.session.as_ref()?.player.status();
+        let ids: Vec<i32> = status
+            .tracks
+            .iter()
+            .filter(|t| t.kind == TrackKind::Audio)
+            .map(|t| t.index)
+            .collect();
+        let at = ids.iter().position(|&i| Some(i) == status.audio_track)?;
+        (ids.len() > 1).then(|| Command::SelectAudio(ids[(at + 1) % ids.len()]))
     }
 
     fn toggle_fullscreen(&self) {
@@ -499,13 +441,14 @@ impl Running {
                     );
                     if session.layer_hdr != Some(hdr) {
                         if session.layer_hdr.is_none() {
-                            set_layer_hidden(&self.layer, false);
+                            self.surface.set_hidden(false);
                         }
-                        set_layer_dynamic_range(&self.layer, hdr);
+                        self.surface.set_hdr(hdr);
                         session.layer_hdr = Some(hdr);
                     }
-                    let layer = layer_state(&self.layer);
-                    if layer != session.printed_layer {
+                    if let Some(layer) = self.surface.describe()
+                        && layer != session.printed_layer
+                    {
                         println!("Layer:   {layer}");
                         session.printed_layer = layer;
                     }
@@ -541,12 +484,31 @@ impl Running {
                 prefs: &self.prefs,
             });
             self.interface.show(&state);
+
+            // With no interface drawn, the title bar says where playback is.
+            #[cfg(not(target_os = "macos"))]
+            {
+                let state = if status.ended {
+                    "  (end)"
+                } else if status.paused {
+                    "  (paused)"
+                } else {
+                    ""
+                };
+                let length = status.info.as_ref().map_or(0.0, |i| i.duration);
+                self.window.set_title(&format!(
+                    "{} - {} / {}{state} - BitSpring Video",
+                    session.file_name,
+                    report::clock(status.position),
+                    report::clock(length)
+                ));
+            }
         }
 
         if let Some(error) = failed {
             eprintln!("bitspring-video: {error}");
             self.session = None;
-            set_layer_hidden(&self.layer, true);
+            self.surface.set_hidden(true);
             self.error = Some(error);
             self.window.set_title("BitSpring Video");
         }
@@ -573,8 +535,10 @@ impl App {
             .with_title("BitSpring Video")
             .with_inner_size(LogicalSize::new(1280.0, 720.0))
             .with_min_inner_size(LogicalSize::new(640.0, 360.0))
-            .with_theme(Some(Theme::Dark))
-            // The picture fills the whole window; the title bar's buttons float over it.
+            .with_theme(Some(Theme::Dark));
+        // On the Mac the picture fills the whole window and the title bar's buttons float over it.
+        #[cfg(target_os = "macos")]
+        let attributes = attributes
             .with_titlebar_transparent(true)
             .with_fullsize_content_view(true)
             .with_title_hidden(true);
@@ -582,15 +546,11 @@ impl App {
             .create_window(attributes)
             .map_err(|e| e.to_string())?;
 
-        let handle = window.window_handle().map_err(|e| e.to_string())?;
-        let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
-            return Err("not an AppKit window".into());
-        };
-        // SAFETY: the view belongs to `window`, which outlives the layer (see `Running`).
-        let layer = unsafe { raw_window_metal::Layer::from_ns_view(appkit.ns_view) };
-        // SAFETY: the same view, on the main thread; the interface is dropped before the window.
+        // SAFETY: `Running` drops the surface before the window.
+        let surface = unsafe { Surface::new(&window) }?;
+        // SAFETY: the window's own view, on the main thread; dropped before the window.
         let interface = unsafe {
-            Interface::attach(appkit.ns_view.as_ptr(), || {
+            Interface::attach(surface.view(), || {
                 WAKE.with(|wake| {
                     if let Some(proxy) = wake.borrow().as_ref() {
                         let _ = proxy.send_event(());
@@ -599,7 +559,7 @@ impl App {
             })
         };
 
-        let display = display_of(&window).ok_or("no display found")?;
+        let display = display_of(&window);
         println!("Display: {}", report::display(&display).trim_end());
 
         // What is saved, then what the command line asks for on top of it for this run.
@@ -626,7 +586,7 @@ impl App {
         let mut running = Running {
             session: None,
             interface,
-            layer,
+            surface,
             window,
             display,
             error: None,
@@ -731,9 +691,7 @@ impl App {
 
     fn poll_display(&mut self) {
         let Some(r) = &mut self.running else { return };
-        let Some(display) = display_of(&r.window) else {
-            return;
-        };
+        let display = display_of(&r.window);
         // The headroom in use moves with what is on screen; it is not a change of display.
         let in_use = headroom_in_use(&display);
         if (in_use - headroom_in_use(&r.display)).abs() > 0.05 {
@@ -764,13 +722,77 @@ impl ApplicationHandler for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        let Some(r) = &self.running else { return };
+        let Some(r) = &mut self.running else { return };
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => r.send(Command::Resize(size.width, size.height)),
             WindowEvent::Moved(_) | WindowEvent::ScaleFactorChanged { .. } => {
                 // Possibly on another display now: look again right away.
                 self.last_display_poll = Instant::now() - DISPLAY_POLL;
+            }
+            // The Mac's interface takes drops itself; elsewhere the window does.
+            #[cfg(not(target_os = "macos"))]
+            WindowEvent::DroppedFile(path) => {
+                r.handle(
+                    Request::Open(path.to_string_lossy().into_owned()),
+                    &self.settings,
+                );
+            }
+            #[cfg(not(target_os = "macos"))]
+            WindowEvent::ModifiersChanged(m) => self.modifiers = m.state(),
+            #[cfg(not(target_os = "macos"))]
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                let now = Instant::now();
+                if self
+                    .last_click
+                    .is_some_and(|t| now - t < Duration::from_millis(400))
+                {
+                    self.last_click = None;
+                    r.toggle_fullscreen();
+                } else {
+                    self.last_click = Some(now);
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+                let step = if self.modifiers.shift_key() {
+                    60.0
+                } else {
+                    5.0
+                };
+                let request = match event.logical_key.as_ref() {
+                    Key::Named(NamedKey::Space) if !event.repeat => {
+                        Some(Request::Player(Command::TogglePause))
+                    }
+                    Key::Named(NamedKey::ArrowLeft) => {
+                        Some(Request::Player(Command::SeekBy(-step)))
+                    }
+                    Key::Named(NamedKey::ArrowRight) => {
+                        Some(Request::Player(Command::SeekBy(step)))
+                    }
+                    Key::Named(NamedKey::ArrowUp) => Some(Request::Player(Command::VolumeBy(0.05))),
+                    Key::Named(NamedKey::ArrowDown) => {
+                        Some(Request::Player(Command::VolumeBy(-0.05)))
+                    }
+                    Key::Named(NamedKey::Enter) if !event.repeat => Some(Request::ToggleFullscreen),
+                    Key::Named(NamedKey::Escape) => Some(Request::ExitFullscreen),
+                    Key::Character(c) if !event.repeat => match c.to_lowercase().as_str() {
+                        "f" => Some(Request::ToggleFullscreen),
+                        "m" => Some(Request::Player(Command::ToggleMute)),
+                        "h" => Some(Request::Player(Command::CycleHdrMode)),
+                        "s" => r.next_subtitles().map(Request::Player),
+                        "a" => r.next_sound().map(Request::Player),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                if let Some(request) = request {
+                    r.handle(request, &self.settings);
+                }
             }
             _ => {}
         }

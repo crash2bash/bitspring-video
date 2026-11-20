@@ -820,10 +820,26 @@ pub struct Gpu {
 unsafe impl Send for Gpu {}
 
 impl Gpu {
+    /// Render into a window by its handle (`HWND`), through Direct3D 11.
+    ///
+    /// # Safety
+    /// `hwnd` must be a live window that outlives the returned `Gpu`.
+    #[cfg(windows)]
+    pub unsafe fn for_window(hwnd: *mut c_void) -> Result<Gpu, Error> {
+        let mut error = [0 as c_char; 256];
+        // SAFETY: upheld by the caller; the error buffer outlives the call.
+        let ptr =
+            unsafe { ffi::bsv_gpu_create_win32(hwnd, error.as_mut_ptr(), error.len() as c_int) };
+        NonNull::new(ptr)
+            .map(|ptr| Gpu { ptr })
+            .ok_or_else(|| Error(text(&error)))
+    }
+
     /// Render into a `CAMetalLayer`.
     ///
     /// # Safety
     /// `layer` must point to a live `CAMetalLayer` that outlives the returned `Gpu`.
+    #[cfg(target_os = "macos")]
     pub unsafe fn for_metal_layer(layer: *mut c_void) -> Result<Gpu, Error> {
         let mut error = [0 as c_char; 256];
         // SAFETY: upheld by the caller; the error buffer outlives the call.
