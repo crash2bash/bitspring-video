@@ -79,6 +79,7 @@ public sealed partial class MainWindow : Window
 
         EmptyTitle.Text = L("Drop a video here", "Перетащите сюда видео");
         OpenButton.Content = L("Open a file…", "Открыть файл…");
+        RestartButton.Content = L("From the start", "С начала");
         Tip(TitleButton, L("Open another file", "Открыть другой файл"));
         Tip(SignalButton, L("How the picture is being shown", "Как показывается картинка"));
         Tip(SettingsButton, L("Settings", "Настройки"));
@@ -231,6 +232,9 @@ public sealed partial class MainWindow : Window
         EmptyDisplay.Foreground = s.Display.Hdr == "off" ? Resource("BrassBrush") : Resource("QuietBrush");
         EmptyError.Text = s.Error ?? "";
         EmptyError.Visibility = s.Error == null ? Visibility.Collapsed : Visibility.Visible;
+        ResumeNote.Visibility = open && s.ResumedFrom != null ? Visibility.Visible : Visibility.Collapsed;
+        if (s.ResumedFrom is double from)
+            ResumeText.Text = L($"Picked up from {Clock(from)}", $"Продолжено с {Clock(from)}");
         if (!open) return;
 
         TitleText.Text = s.File;
@@ -320,6 +324,8 @@ public sealed partial class MainWindow : Window
     private void OnMuteClick(object sender, RoutedEventArgs e) => player.Send("toggle-mute");
 
     private void OnFullscreenClick(object sender, RoutedEventArgs e) => ToggleFullscreen();
+
+    private void OnRestartClick(object sender, RoutedEventArgs e) => player.Send("seek-to 0");
 
     private void OnDurationClick(object sender, RoutedEventArgs e)
     {

@@ -128,6 +128,8 @@ internal sealed class PlayerState
     public double Duration;
     public bool Paused;
     public bool Ended;
+    /// <summary>Where this file was picked up from, for the few seconds the note about it shows.</summary>
+    public double? ResumedFrom;
     public double Volume = 1;
     public bool Muted;
     public bool Fullscreen;

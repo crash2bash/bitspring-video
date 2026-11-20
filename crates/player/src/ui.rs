@@ -191,6 +191,8 @@ pub struct State {
     duration: f64,
     paused: bool,
     ended: bool,
+    /// Where this file was picked up from, when it was not started from its beginning.
+    resumed_from: Option<f64>,
     volume: f32,
     muted: bool,
     fullscreen: bool,
@@ -335,6 +337,8 @@ fn mode_name(mode: HdrMode) -> &'static str {
 pub struct Playing<'a> {
     pub file_name: &'a str,
     pub status: &'a playback::Status,
+    /// Where the file was picked up from, when it was seen before and not finished.
+    pub resumed_from: Option<f64>,
 }
 
 /// Everything [`State::new`] draws on.
@@ -392,7 +396,12 @@ impl State {
             },
             peak_known: display.luminance.source != LuminanceSource::Assumed,
         };
-        let Some(Playing { file_name, status }) = playing else {
+        let Some(Playing {
+            file_name,
+            status,
+            resumed_from,
+        }) = playing
+        else {
             return State {
                 file: None,
                 error: error.map(str::to_string),
@@ -400,6 +409,7 @@ impl State {
                 duration: 0.0,
                 paused: false,
                 ended: false,
+                resumed_from: None,
                 volume,
                 muted,
                 fullscreen,
@@ -487,6 +497,7 @@ impl State {
             duration: status.info.as_ref().map_or(0.0, |i| i.duration),
             paused: status.paused,
             ended: status.ended,
+            resumed_from,
             volume: status.volume,
             muted: status.muted,
             fullscreen,

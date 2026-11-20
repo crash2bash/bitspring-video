@@ -16,7 +16,8 @@ pub struct Settings {
     pub quality: Option<Quality>,
     pub audio_delay: Option<f64>,
     pub renderer_options: String,
-    pub start: f64,
+    /// Where to begin, when the command line says: it comes before what is remembered.
+    pub start: Option<f64>,
     pub sound: bool,
     /// Print the clock's state once a second.
     pub diagnostics: bool,

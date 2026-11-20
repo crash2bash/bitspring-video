@@ -101,7 +101,7 @@ jobs:
           # A "Signal" line is printed once a frame has gone through the renderer to the window.
           grep -E '^(Video|Signal|Clock)' run.log
           grep -q '^Signal:' run.log
-          rm -f run.log settings.json
+          rm -f run.log settings.json history.json
 
       - uses: actions/upload-artifact@v4
         with:
@@ -196,7 +196,10 @@ jobs:
           # The machine draws in software: the quickest rendering keeps the picture moving.
           '{"quality":"fast"}' | Set-Content "$here\shots\settings.json"
 
-          function Photograph($name, $seconds, $arguments) {
+          # $remembering: keep what the run before remembered about the clip, and close the
+          # window the way a person does, so that this run's own place is written down.
+          function Photograph($name, $seconds, $arguments, $remembering = $false) {
+            if (-not $remembering) { Remove-Item "$here\shots\history.json" -ErrorAction SilentlyContinue }
             $log = "$here\shots\$name.log"
             $all = $arguments + @("--no-sound", "--pin", "--settings", "$here\shots\settings.json", "--log", $log)
             $app = Start-Process "$here\BitSpring-Video-windows\BitSpringVideo.exe" -ArgumentList $all -PassThru
@@ -207,7 +210,13 @@ jobs:
             $graphics.CopyFromScreen($screen.Left, $screen.Top, 0, 0, $picture.Size)
             $picture.Save("$here\shots\$name.png")
             $alive = -not $app.HasExited
-            if ($alive) { Stop-Process -Id $app.Id -Force; Start-Sleep -Seconds 1 }
+            if ($alive -and $remembering) {
+              [void]$app.CloseMainWindow()
+              if (-not $app.WaitForExit(8000)) { "$name`: did not close when asked"; Stop-Process -Id $app.Id -Force }
+            } elseif ($alive) {
+              Stop-Process -Id $app.Id -Force
+            }
+            Start-Sleep -Seconds 1
             "::group::$name"
             if (Test-Path $log) { Get-Content $log }
             if (Test-Path "$log.crash.txt") { Get-Content "$log.crash.txt" }
@@ -219,10 +228,18 @@ jobs:
           Photograph "2-playing" 14 @($clip)
           Photograph "3-signal" 14 @($clip, "--show", "signal")
           Photograph "4-settings" 14 @($clip, "--show", "settings")
+          # Eighteen seconds of a thirty-second clip, closed, and opened again: it should be
+          # picked up where it was left, with a note saying so.
+          Remove-Item "$here\shots\history.json" -ErrorAction SilentlyContinue
+          Photograph "5-first-visit" 18 @($clip) $true
+          Photograph "6-picked-up" 11 @($clip) $true
 
           # A "Signal" line is written once a frame has gone through the renderer to the panel.
           if (-not (Select-String -Path "$here\shots\2-playing.log" -Pattern '^Signal:' -Quiet)) {
             throw "No picture reached the panel"
+          }
+          if (-not (Select-String -Path "$here\shots\6-picked-up.log" -Pattern '^Resume:' -Quiet)) {
+            throw "The clip was not picked up where it was left"
           }
 
       - uses: actions/upload-artifact@v4

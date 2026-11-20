@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use bitspring_video::history::{Memory, ResumeNote};
 use bitspring_video::playback::{Command, Options, Player};
 use bitspring_video::prefs::Preferences;
 use bitspring_video::report;
@@ -79,10 +80,14 @@ struct Session {
     file_name: String,
     logged_media: String,
     logged_signal: String,
+    /// Shown for a while when the file was picked up where it was left.
+    resume_note: Option<ResumeNote>,
 }
 
 pub struct Host {
     session: Option<Session>,
+    /// Where each file was stopped, and the tracks chosen for it.
+    memory: Memory,
     /// The display as the system reports it, and which one the window is on.
     display: Display,
     monitor: u64,
@@ -144,6 +149,7 @@ impl Host {
         ));
         Host {
             session: None,
+            memory: Memory::beside(&preferences_path),
             display,
             monitor: 0,
             last_display_poll: Instant::now(),
@@ -183,7 +189,19 @@ impl Host {
         }
     }
 
-    fn send(&self, command: Command) {
+    fn send(&mut self, command: Command) {
+        match command {
+            // A track chosen by hand is remembered for this file.
+            Command::SelectAudio(track) => self.memory.chose_audio(track),
+            Command::SelectSubtitle(track) => self.memory.chose_subtitles(track),
+            // Going anywhere else answers the note about where the file was picked up.
+            Command::SeekTo(_) | Command::SeekBy(_) => {
+                if let Some(session) = &mut self.session {
+                    session.resume_note = None;
+                }
+            }
+            _ => {}
+        }
         if let Some(session) = &self.session {
             session.player.send(command);
         }
@@ -198,6 +216,7 @@ impl Host {
     fn close(&mut self) {
         // Dropping the player stops its threads and destroys its swapchain.
         self.session = None;
+        self.memory.closed();
         *self.new_swapchain.lock().unwrap() = None;
         self.clear_panel = true;
     }
@@ -210,6 +229,10 @@ impl Host {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| path.to_string());
         bsv_engine::log_line(&format!("File:    {path}"));
+        let recalled = self.memory.opened(path);
+        if let Some(from) = recalled.start {
+            bsv_engine::log_line(&format!("Resume:  from {}", report::clock(from)));
+        }
         let options = Options {
             path: path.to_string(),
             hardware: self.prefs.hardware_decoding,
@@ -217,7 +240,7 @@ impl Host {
             dolby_vision: self.prefs.dolby_vision,
             quality: self.prefs.render_quality(),
             renderer_options: String::new(),
-            start: 0.0,
+            start: recalled.start.unwrap_or(0.0),
             sound: self.sound,
             audio_delay: self.prefs.audio_delay_ms as f64 / 1000.0,
             volume: self.volume,
@@ -227,6 +250,8 @@ impl Host {
             subtitle_nits: self.prefs.subtitle_nits,
             audio_language: self.prefs.audio_language.clone(),
             subtitle_language: self.prefs.subtitle_language.clone(),
+            audio_track: recalled.audio_track,
+            subtitles: recalled.subtitles,
         };
         let slot = self.new_swapchain.clone();
         let player =
@@ -241,6 +266,7 @@ impl Host {
             file_name,
             logged_media: String::new(),
             logged_signal: String::new(),
+            resume_note: recalled.start.map(ResumeNote::new),
         });
     }
 
@@ -314,6 +340,12 @@ impl Host {
             self.volume = status.volume;
             self.muted = status.muted;
             self.mode = status.mode;
+            // Once a picture is on screen the position is a real one, worth remembering.
+            if status.stats.output_transfer.is_some() {
+                let duration = status.info.as_ref().map_or(0.0, |i| i.duration);
+                self.memory
+                    .note(status.position, duration, status.ended, status.paused);
+            }
             if let Some(info) = &status.info {
                 let media = report::media(info);
                 if media != session.logged_media {
@@ -334,6 +366,10 @@ impl Host {
                 playing: Some(Playing {
                     file_name: &session.file_name,
                     status: &status,
+                    resumed_from: session
+                        .resume_note
+                        .as_mut()
+                        .and_then(|note| note.showing(status.stats.output_transfer.is_some())),
                 }),
                 display: &shown,
                 reported_peak: self.display.luminance.peak_nits,
@@ -372,6 +408,7 @@ impl Host {
 impl Drop for Host {
     fn drop(&mut self) {
         self.session = None;
+        self.memory.closed();
         if (self.saved.volume - self.volume).abs() > 0.001 {
             self.saved.volume = self.volume;
             self.save();

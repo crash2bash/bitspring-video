@@ -85,6 +85,24 @@
             </Button>
         </Border>
 
+        <!-- The film was picked up where it was left: said for a moment, with its beginning on offer.
+             Just above the transport bar, whether or not that shows. -->
+        <Border
+            x:Name="ResumeNote"
+            Visibility="Collapsed"
+            HorizontalAlignment="Center"
+            VerticalAlignment="Bottom"
+            Margin="0,0,0,90"
+            Height="38"
+            Padding="16,0,6,0"
+            CornerRadius="19"
+            Background="{StaticResource GlassBrush}">
+            <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                <TextBlock x:Name="ResumeText" FontSize="13" VerticalAlignment="Center" Foreground="{StaticResource QuietBrush}" />
+                <Button x:Name="RestartButton" Click="OnRestartClick" FontSize="13" Padding="12,3,12,4" CornerRadius="13" IsTabStop="False" />
+            </StackPanel>
+        </Border>
+
         <Grid x:Name="Chrome" Visibility="Collapsed">
             <Border
                 x:Name="TitlePill"

@@ -31,6 +31,8 @@ Early. What works today, on the Mac:
   (its own figure, or yours), rendering quality, hardware decoding; subtitle size, subtitle
   brightness in HDR, preferred subtitle and sound languages; picture delay for lip sync
 - Pause, seeking, volume, full screen
+- A film is picked up where it was left, with the sound and subtitle tracks chosen for it; a
+  note offers its beginning instead. A film watched to its credits starts from the beginning
 - A native interface in the system's Liquid Glass (macOS 26 or later): open or drop a file,
   transport, and a signal panel that shows the video's range of light against the display's
 
@@ -43,7 +45,7 @@ build machine, which has neither a graphics card nor an HDR screen: HDR output, 
 decoding and sound on Windows have not yet been judged on a real machine.
 
 Not there yet: playing from the network, choosing the output device, bitstream passthrough to a
-receiver, remembering where a film was stopped.
+receiver.
 
 Dolby Vision: the RPU is applied by libplacebo (profiles 5 and 8; profile 7 plays its base layer
 with the RPU, the enhancement layer is not decoded). The output is HDR10 mapped to the display.
@@ -137,7 +139,9 @@ mastered. Violet: it is being changed to fit the display. The signal panel says 
 
 Settings are kept in `~/Library/Application Support/BitSpring Video/settings.json`
 (`--settings <file>` to keep them elsewhere). Options given on the command line hold for that
-run and are not saved.
+run and are not saved. Beside the settings, `history.json` holds where each film was stopped
+and the tracks chosen for it; a film is known by its size and the beginning of its contents, so
+renaming or moving it changes nothing. `--start <seconds>` begins there whatever is remembered.
 
 For testing without a keyboard, `--script "2:pause,4:pause,5:seek+10,9:quit"` runs commands at
 given times (`pin` keeps the controls up, `panel` opens the signal panel), and `--verbose` prints

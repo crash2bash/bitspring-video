@@ -69,6 +69,10 @@ pub struct Options {
     /// subtitles only when forced.
     pub audio_language: String,
     pub subtitle_language: String,
+    /// Tracks chosen by hand the last time this file was played, by stream number; for
+    /// subtitles `Some(None)` is "off". They come before the languages above.
+    pub audio_track: Option<i32>,
+    pub subtitles: Option<Option<i32>>,
 }
 
 pub enum Command {
@@ -972,8 +976,12 @@ fn render_loop(
             })
             .expect("spawn the subtitle file search");
     }
-    // Sound in the language asked for, when the file has it; otherwise as the file prefers.
-    if let Some(track) = tracks.iter().find(|t| {
+    // Sound: the track chosen for this file before; else in the language asked for, when the
+    // file has it; otherwise as the file prefers.
+    let has = |kind: TrackKind, index: i32| tracks.iter().any(|t| t.kind == kind && t.index == index);
+    if let Some(index) = options.audio_track.filter(|&i| has(TrackKind::Audio, i)) {
+        let _ = source.select_audio(index);
+    } else if let Some(track) = tracks.iter().find(|t| {
         t.kind == TrackKind::Audio && language::same(&t.language, &options.audio_language)
     }) {
         let _ = source.select_audio(track.index);
@@ -989,9 +997,19 @@ fn render_loop(
             .map(|t| t.index)
     };
     let in_language = |t: &Track| language::same(&t.language, &options.subtitle_language);
-    let mut subtitle_track = subtitle(&|t| in_language(t) && !t.forced && !t.hearing_impaired)
-        .or_else(|| subtitle(&|t| in_language(t)))
-        .or_else(|| subtitle(&|t| t.forced));
+    let by_the_rules = || {
+        subtitle(&|t| in_language(t) && !t.forced && !t.hearing_impaired)
+            .or_else(|| subtitle(&|t| in_language(t)))
+            .or_else(|| subtitle(&|t| t.forced))
+    };
+    // What was chosen for this file before comes first: a track inside it, a file next to it
+    // (put on when the search for those comes back), or no subtitles at all.
+    let mut subtitle_track = match options.subtitles {
+        Some(None) => None,
+        Some(Some(index)) if index >= SIDECAR_BASE => None,
+        Some(Some(index)) if has(TrackKind::Subtitle, index) => Some(index),
+        _ => by_the_rules(),
+    };
     let chosen_by_language =
         subtitle_track.is_some_and(|i| tracks.iter().any(|t| t.index == i && in_language(t)));
     if subtitle_track.is_some() && source.select_subtitle(subtitle_track).is_err() {
@@ -1217,10 +1235,18 @@ fn render_loop(
             ));
             // A file someone put next to the video is shown without being asked for, unless a
             // track in the preferred language is already on and this file is not in it.
-            let wanted = found
-                .iter()
-                .position(|(_, l)| language::same(l, &options.subtitle_language))
-                .or((!chosen_by_language && !found.is_empty()).then_some(0));
+            let wanted = match options.subtitles {
+                // The file chosen for this video before, if it is still there.
+                Some(Some(index)) if index >= SIDECAR_BASE => {
+                    Some((index - SIDECAR_BASE) as usize).filter(|&n| n < found.len())
+                }
+                // Any other choice made by hand stands.
+                Some(_) => None,
+                None => found
+                    .iter()
+                    .position(|(_, l)| language::same(l, &options.subtitle_language))
+                    .or((!chosen_by_language && !found.is_empty()).then_some(0)),
+            };
             if let Some(n) = wanted {
                 pending.push_back(Command::SelectSubtitle(Some(SIDECAR_BASE + n as i32)));
             }

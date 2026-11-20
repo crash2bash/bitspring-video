@@ -199,6 +199,15 @@ struct PlayerOverlay: View {
                 controls.transition(.opacity)
             }
 
+            // The film was picked up where it was left: say so for a moment, and offer its
+            // beginning. It stands just above the transport bar, whether or not that shows.
+            if let from = model.status.resumedFrom {
+                ResumeNote(from: from) { model.send("seek-to 0") }
+                    .padding(.bottom, 22 + 56 + 12)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                    .transition(.opacity)
+            }
+
             if model.dropTargeted {
                 RoundedRectangle(cornerRadius: 18, style: .continuous)
                     .strokeBorder(Color.porcelain.opacity(0.8), style: StrokeStyle(lineWidth: 2, dash: [10, 8]))
@@ -207,6 +216,7 @@ struct PlayerOverlay: View {
             }
         }
         .ignoresSafeArea()
+        .animation(.smooth(duration: 0.35), value: model.status.resumedFrom != nil)
         .environment(\.colorScheme, .dark)
         .foregroundStyle(Color.porcelain)
         .onDrop(of: [.fileURL], isTargeted: $model.dropTargeted) { providers in
@@ -254,6 +264,35 @@ struct PlayerOverlay: View {
                     .padding(.bottom, 22)
             }
         }
+    }
+}
+
+// MARK: - Resume note
+
+/// "Picked up from 10:06", with a way back to the beginning.
+private struct ResumeNote: View {
+    let from: Double
+    let restart: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Text(L("Picked up from \(clock(from))", "Продолжено с \(clock(from))"))
+                .font(.system(size: 13))
+                .foregroundStyle(Color.quiet)
+            Button(action: restart) {
+                Text(L("From the start", "С начала"))
+                    .font(.system(size: 13, weight: .medium))
+                    .padding(.horizontal, 12)
+                    .frame(height: 26)
+                    .background(Capsule().fill(Color.black.opacity(0.22)))
+                    .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.leading, 16)
+        .padding(.trailing, 6)
+        .frame(height: 38)
+        .glassEffect(playerGlass(interactive: true), in: .capsule)
     }
 }
 

@@ -58,7 +58,7 @@ struct Args {
     mode: Option<HdrMode>,
     quality: Option<Quality>,
     renderer_options: String,
-    start: f64,
+    start: Option<f64>,
     sound: bool,
     audio_delay: Option<f64>,
     settings: Option<String>,
@@ -75,7 +75,7 @@ fn parse_args() -> Result<Args, String> {
         mode: None,
         quality: None,
         renderer_options: String::new(),
-        start: 0.0,
+        start: None,
         sound: true,
         audio_delay: None,
         settings: None,
@@ -119,9 +119,11 @@ fn parse_args() -> Result<Args, String> {
             "--render" => args.renderer_options = value("--render")?,
             "--script" => args.script = value("--script")?,
             "--start" => {
-                args.start = value("--start")?
-                    .parse()
-                    .map_err(|_| "--start needs a number of seconds".to_string())?
+                args.start = Some(
+                    value("--start")?
+                        .parse()
+                        .map_err(|_| "--start needs a number of seconds".to_string())?,
+                )
             }
             "-h" | "--help" => return Err(String::new()),
             flag if flag.starts_with("--") => return Err(format!("unknown option {flag}")),

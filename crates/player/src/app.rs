@@ -21,6 +21,7 @@ use winit::platform::macos::{MonitorHandleExtMacOS, WindowAttributesExtMacOS};
 use winit::platform::windows::MonitorHandleExtWindows;
 use winit::window::{Fullscreen, Theme, Window, WindowId};
 
+use crate::history::{Memory, ResumeNote};
 use crate::launch::Settings;
 
 use crate::playback::{Command, Options, Player};
@@ -50,6 +51,8 @@ struct Session {
     /// Playback position against the system clock when playing began, to show drift from it.
     clock_origin: Option<(Instant, f64)>,
     underruns: u64,
+    /// Shown for a while when the file was picked up where it was left.
+    resume_note: Option<ResumeNote>,
 }
 
 struct Running {
@@ -67,6 +70,8 @@ struct Running {
     saved: Preferences,
     prefs: Preferences,
     preferences_path: PathBuf,
+    /// Where each file was stopped, and the tracks chosen for it.
+    memory: Memory,
     // Carried from one file to the next.
     volume: f32,
     muted: bool,
@@ -109,12 +114,14 @@ pub fn run(settings: Settings) -> Result<(), String> {
     // The interface wakes the loop when it has a command, so a click is acted on at once.
     WAKE.with(|wake| *wake.borrow_mut() = Some(proxy));
     event_loop.run_app(&mut app).map_err(|e| e.to_string())?;
-    // The volume is remembered as it was left.
-    if let Some(r) = &mut app.running
-        && (r.saved.volume - r.volume).abs() > 0.001
-    {
-        r.saved.volume = r.volume;
-        r.save_preferences();
+    if let Some(r) = &mut app.running {
+        // Where the film was left.
+        r.memory.closed();
+        // The volume is remembered as it was left.
+        if (r.saved.volume - r.volume).abs() > 0.001 {
+            r.saved.volume = r.volume;
+            r.save_preferences();
+        }
     }
     match app.failure {
         Some(e) => Err(e),
@@ -191,8 +198,9 @@ fn display_of(window: &Window) -> Display {
 // ---- The application --------------------------------------------------------------------------
 
 impl Running {
-    /// Play `path`, replacing whatever is playing. `start` is where to begin, in seconds.
-    fn open(&mut self, path: &str, settings: &Settings, start: f64) {
+    /// Play `path`, replacing whatever is playing. `start` is where to begin, in seconds,
+    /// when the command line says; otherwise where the file was stopped the last time.
+    fn open(&mut self, path: &str, settings: &Settings, start: Option<f64>) {
         // The old session must be gone before a new renderer takes the layer.
         self.session = None;
         self.error = None;
@@ -205,6 +213,11 @@ impl Running {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| path.to_string());
         println!("File:    {path}");
+        let recalled = self.memory.opened(path);
+        let resumed_from = recalled.start.filter(|_| start.is_none());
+        if let Some(from) = resumed_from {
+            println!("Resume:  from {}", report::clock(from));
+        }
         let size = self.window.inner_size();
         let options = Options {
             path: path.to_string(),
@@ -213,7 +226,7 @@ impl Running {
             dolby_vision: self.prefs.dolby_vision,
             quality: self.quality,
             renderer_options: settings.renderer_options.clone(),
-            start,
+            start: start.or(recalled.start).unwrap_or(0.0),
             sound: settings.sound,
             audio_delay: self.audio_delay,
             volume: self.volume,
@@ -223,6 +236,8 @@ impl Running {
             subtitle_nits: self.prefs.subtitle_nits,
             audio_language: self.prefs.audio_language.clone(),
             subtitle_language: self.prefs.subtitle_language.clone(),
+            audio_track: recalled.audio_track,
+            subtitles: recalled.subtitles,
         };
         // SAFETY: `Running` drops the session before the layer, and `open` drops the previous
         // session before starting another on the same layer.
@@ -247,6 +262,7 @@ impl Running {
             layer_hdr: None,
             clock_origin: None,
             underruns: 0,
+            resume_note: resumed_from.map(ResumeNote::new),
         });
     }
 
@@ -306,7 +322,19 @@ impl Running {
         self.window.set_fullscreen(next);
     }
 
-    fn send(&self, command: Command) {
+    fn send(&mut self, command: Command) {
+        match command {
+            // A track chosen by hand is remembered for this file.
+            Command::SelectAudio(track) => self.memory.chose_audio(track),
+            Command::SelectSubtitle(track) => self.memory.chose_subtitles(track),
+            // Going anywhere else answers the note about where the file was picked up.
+            Command::SeekTo(_) | Command::SeekBy(_) => {
+                if let Some(session) = &mut self.session {
+                    session.resume_note = None;
+                }
+            }
+            _ => {}
+        }
         if let Some(session) = &self.session {
             session.player.send(command);
         }
@@ -375,7 +403,7 @@ impl Running {
                 self.controls_visible = visible;
                 self.send(Command::SubtitleLift(self.subtitle_lift()));
             }
-            Request::Open(path) => self.open(&path, settings, 0.0),
+            Request::Open(path) => self.open(&path, settings, None),
             Request::ToggleFullscreen => self.toggle_fullscreen(),
             Request::ExitFullscreen => self.window.set_fullscreen(None),
         }
@@ -394,6 +422,12 @@ impl Running {
             self.volume = status.volume;
             self.muted = status.muted;
             self.mode = status.mode;
+            // Once a picture is on screen the position is a real one, worth remembering.
+            if status.stats.output_transfer.is_some() {
+                let duration = status.info.as_ref().map_or(0.0, |i| i.duration);
+                self.memory
+                    .note(status.position, duration, status.ended, status.paused);
+            }
 
             if let Some(info) = &status.info {
                 // Printed again when the first decoded frame adds what the container did not say.
@@ -475,6 +509,10 @@ impl Running {
                 playing: Some(Playing {
                     file_name: &session.file_name,
                     status: &status,
+                    resumed_from: session
+                        .resume_note
+                        .as_mut()
+                        .and_then(|note| note.showing(status.stats.output_transfer.is_some())),
                 }),
                 display: &shown,
                 reported_peak: self.display.luminance.peak_nits,
@@ -510,6 +548,7 @@ impl Running {
         if let Some(error) = failed {
             eprintln!("bitspring-video: {error}");
             self.session = None;
+            self.memory.closed();
             self.surface.set_hidden(true);
             self.error = Some(error);
             self.window.set_title("BitSpring Video");
@@ -602,6 +641,7 @@ impl App {
             saved,
             prefs,
             preferences_path: self.settings.preferences.clone(),
+            memory: Memory::beside(&self.settings.preferences),
         };
         if let Some(path) = self.settings.path.clone() {
             running.open(&path, &self.settings, self.settings.start);
@@ -660,7 +700,7 @@ impl App {
                 a if a.starts_with("volume") => {
                     r.send(Command::VolumeBy(number(&a[6..]) as f32 / 100.0))
                 }
-                a if a.starts_with("open ") => r.open(a[5..].trim(), &self.settings, 0.0),
+                a if a.starts_with("open ") => r.open(a[5..].trim(), &self.settings, None),
                 other => eprintln!("[warn] unknown script command \"{other}\""),
             }
         }

@@ -114,6 +114,8 @@ struct Status: Codable, Equatable {
     var duration: Double
     var paused: Bool
     var ended: Bool
+    /// Where this file was picked up from, for the few seconds the note about it shows.
+    var resumedFrom: Double?
     var volume: Double
     var muted: Bool
     var fullscreen: Bool
@@ -131,7 +133,8 @@ struct Status: Codable, Equatable {
     var settings: SettingsInfo
 
     static let empty = Status(
-        file: nil, error: nil, position: 0, duration: 0, paused: false, ended: false, volume: 1,
+        file: nil, error: nil, position: 0, duration: 0, paused: false, ended: false,
+        resumedFrom: nil, volume: 1,
         muted: false, fullscreen: false, mode: "auto", video: nil, signal: nil, sound: nil,
         audioTracks: [], subtitleTracks: [], audioTrack: nil, subtitleTrack: nil,
         display: DisplayInfo(name: "", hdr: "unsupported", peak: 0, min: nil, headroom: 1, peakKnown: false),
