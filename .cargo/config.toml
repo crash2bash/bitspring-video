@@ -1,0 +1,3 @@
+# The interface is built on the system's Liquid Glass, which arrived in macOS 26.
+[env]
+MACOSX_DEPLOYMENT_TARGET = "26.0"

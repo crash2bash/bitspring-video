@@ -1,0 +1,99 @@
+# BitSpring Video
+
+A video player built around one thing: showing HDR the way it was graded, on the display that is
+actually connected.
+
+It reads what the display can do (its EDID and the operating system's live HDR state), reads
+everything the file says about itself (HDR10 mastering data, HDR10+ and Dolby Vision dynamic
+metadata), and maps one to the other in the player with [libplacebo](https://libplacebo.org),
+the renderer behind mpv and VLC. The terminal shows the whole path, from the file to the screen,
+so nothing about it is a guess.
+
+## Status
+
+Early. What works today, on the Mac:
+
+- 4K HEVC / H.264 / AV1 / VP9 and whatever else FFmpeg decodes, on the video decoder (VideoToolbox)
+- HDR10 and HLG shown as real HDR (a BT.2020 PQ 10-bit surface with HDR10 metadata)
+- HDR mapped down to SDR when the display is SDR or has HDR switched off, with a note saying so
+- SDR left as SDR, never stretched
+- Display detection: HDR on/off, peak and black level, gamut; rechecked every second while playing
+- Sound: every codec FFmpeg decodes (AAC, AC-3, E-AC-3, DTS, TrueHD, FLAC, Opus ...), on the
+  default output device, at the track's own sample rate when the device offers it; more channels
+  than the device has are mixed down
+- The picture follows the sound device's clock, so sound is never stretched or dropped to keep sync
+- Subtitles: text (SRT, ASS/SSA with its own styles and the fonts inside the file, WebVTT, MP4
+  text) drawn by libass at the display's resolution; picture subtitles (Blu-ray PGS, DVD); and
+  subtitle files next to the video (`film.srt`, `film.ru.ass`). In HDR, subtitle white sits at
+  SDR white, not at the display's peak
+- Choosing the sound track and the subtitle track
+- Settings, each taking effect on the picture as it is changed: the display's peak brightness
+  (its own figure, or yours), rendering quality, hardware decoding; subtitle size, subtitle
+  brightness in HDR, preferred subtitle and sound languages; picture delay for lip sync
+- Pause, seeking, volume, full screen
+- A native interface in the system's Liquid Glass (macOS 26 or later): open or drop a file,
+  transport, and a signal panel that shows the video's range of light against the display's
+
+Not there yet: choosing the output device, bitstream passthrough to a receiver, remembering where
+a film was stopped, Windows playback (display detection for Windows is written and compiles;
+the renderer and a native Windows interface are not).
+
+Dolby Vision: the RPU is applied by libplacebo (profiles 5 and 8; profile 7 plays its base layer
+with the RPU, the enhancement layer is not decoded). The output is HDR10 mapped to the display.
+No player outside licensed devices can switch a TV into its Dolby Vision mode. This path has not
+yet been tried on a real Dolby Vision file.
+
+## Layout
+
+- `crates/display`: what the display can do (EDID parser, macOS and Windows queries) and the
+  policy that picks the output signal. Pure Rust, tested.
+- `crates/engine`: decoding (FFmpeg) and rendering (libplacebo over Vulkan; MoltenVK on the Mac).
+  A small C bridge in `c/`, a safe Rust API on top.
+- `crates/audio`: sound output and the playback clock.
+- `crates/player`: the window and the playback threads.
+- `crates/player/macos`: the interface, in SwiftUI. It is compiled into the player and talks to
+  it through four C functions (`src/ui.rs`): state goes in as JSON, commands come back as text.
+- `testdata/make-clips.sh`: generates test clips: grey patches at known luminance, and a flash
+  with a beep every second for checking that picture and sound coincide.
+
+## Building (Mac)
+
+```
+brew install ffmpeg libplacebo libass molten-vk vulkan-loader pkgconf
+cargo build --release
+```
+
+## Running
+
+```
+bitspring-video                     open the player; drop a video on it
+bitspring-video <file>              play
+bitspring-video --displays          what each connected display can do
+bitspring-video --info <file>       what the file is and how it would be shown
+bitspring-video --hdr passthrough <file>
+bitspring-video --audio-delay 80 <file>     the TV or receiver delays sound by 80 ms
+```
+
+Keys: Space pauses, Left / Right seek 5 seconds (with Shift, a minute), Up / Down change the
+volume, M mutes, S steps through the subtitle tracks, A through the sound tracks, F or a
+double-click for full screen, I opens the signal panel, Cmd+comma the settings, Cmd+O a file. The controls hide after a few seconds of playback and return when the pointer moves.
+
+Colour in the interface means one thing. Brass: the picture reaches the screen as it was
+mastered. Violet: it is being changed to fit the display. The signal panel says which, and why.
+
+Settings are kept in `~/Library/Application Support/BitSpring Video/settings.json`
+(`--settings <file>` to keep them elsewhere). Options given on the command line hold for that
+run and are not saved.
+
+For testing without a keyboard, `--script "2:pause,4:pause,5:seek+10,9:quit"` runs commands at
+given times (`pin` keeps the controls up, `panel` opens the signal panel), and `--verbose` prints
+the playback clock once a second.
+
+HDR modes:
+
+- `auto` / `tonemap`: the player maps the picture into the display's range and tells the system
+  it already fits. This is the only way dynamic metadata reaches a display driven as HDR10.
+- `passthrough`: the file's own metadata is sent on and the display (or the system) maps it.
+- `sdr`: always SDR.
+
+On the Mac, HDR for an external display is switched on in System Settings > Displays.

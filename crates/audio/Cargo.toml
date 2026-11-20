@@ -1,0 +1,9 @@
+[package]
+name = "bsv-audio"
+description = "Sound output and the playback clock that video is synchronised to"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+cpal = "0.18"
+rtrb = "0.4"

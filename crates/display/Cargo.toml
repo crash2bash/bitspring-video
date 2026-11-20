@@ -1,0 +1,20 @@
+[package]
+name = "bsv-display"
+description = "What the connected display can do (EDID, OS HDR state) and how to drive it"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = "0.3"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Gdi",
+    "Win32_Devices_Display",
+] }

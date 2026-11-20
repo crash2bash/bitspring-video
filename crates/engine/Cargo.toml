@@ -1,0 +1,13 @@
+[package]
+name = "bsv-engine"
+description = "Decoding (FFmpeg) and HDR rendering (libplacebo) behind a small safe API"
+edition.workspace = true
+version.workspace = true
+links = "bsv"
+
+[dependencies]
+bsv-display = { path = "../display" }
+
+[build-dependencies]
+cc = "1"
+pkg-config = "0.3"

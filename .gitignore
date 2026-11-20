@@ -1,0 +1,6 @@
+/target
+.DS_Store
+.remember/
+/testdata/*.mkv
+/testdata/*.mp4
+/testdata/*.mov
