@@ -1,3 +1,5 @@
+using System.Collections;
+using System.Text;
 using Microsoft.UI.Xaml;
 
 namespace BitSpringVideo;
@@ -14,6 +16,10 @@ public partial class App : Application
         launch = Launch.Parse(Environment.GetCommandLineArgs().Skip(1).ToArray());
         InitializeComponent();
         UnhandledException += (_, e) => Note(e.Exception);
+        // A resource that the markup names and cannot find is otherwise reported only as
+        // "XAML parsing failed", with nothing to say which one.
+        DebugSettings.IsXamlResourceReferenceTracingEnabled = true;
+        DebugSettings.XamlResourceReferenceFailed += (_, e) => Note("Markup: " + e.Message);
     }
 
     protected override void OnLaunched(LaunchActivatedEventArgs args)
@@ -36,12 +42,20 @@ public partial class App : Application
     /// </summary>
     private void Note(Exception e)
     {
+        // What Windows itself said about the failure travels in the exception's data.
+        var text = new StringBuilder($"{e}\n  HRESULT: 0x{e.HResult:X8}");
+        foreach (DictionaryEntry entry in e.Data) text.Append($"\n  {entry.Key}: {entry.Value}");
+        Note(text.ToString());
+    }
+
+    private void Note(string text)
+    {
         try
         {
             var path = launch.Log != null
                 ? launch.Log + ".crash.txt"
                 : Path.Combine(Path.GetTempPath(), "BitSpringVideo-crash.txt");
-            File.AppendAllText(path, $"{DateTime.Now:u}\n{e}\n\n");
+            File.AppendAllText(path, $"{DateTime.Now:u}\n{text}\n\n");
         }
         catch (IOException)
         {

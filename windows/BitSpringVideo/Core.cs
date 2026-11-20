@@ -117,6 +117,8 @@ internal sealed class Player : IDisposable
 }
 
 // The state, as crates/player/src/ui.rs writes it. Keep the two in step.
+// The fields are filled in from JSON, which the compiler cannot see.
+#pragma warning disable CS0649
 
 internal sealed class PlayerState
 {

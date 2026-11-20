@@ -126,6 +126,20 @@ jobs:
       - name: Build
         run: dotnet build windows/BitSpringVideo/BitSpringVideo.csproj -c Release -p:Platform=x64 -o app-out
 
+      - name: The interface loads
+        shell: powershell
+        run: |
+          # Without the player's core beside it the application cannot go on, and says so.
+          # Reaching that point means its own markup and resources loaded.
+          $log = "$PWD\load.log"
+          $app = Start-Process app-out\BitSpringVideo.exe -ArgumentList "--log", $log -PassThru
+          $app.WaitForExit(30000) | Out-Null
+          if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force }
+          $note = if (Test-Path "$log.crash.txt") { Get-Content "$log.crash.txt" -Raw } else { "(it left no note)" }
+          $note
+          Remove-Item "$log*" -ErrorAction SilentlyContinue
+          if ($note -notmatch "DllNotFoundException") { throw "The interface did not load" }
+
       - uses: actions/upload-artifact@v4
         with:
           name: app
