@@ -1024,6 +1024,13 @@ impl Gpu {
         unsafe { ffi::bsv_gpu_set_dolby_vision(self.ptr.as_ptr(), apply as c_int) };
     }
 
+    /// How many refreshes of the display a picture waits in line between being drawn and
+    /// being shown.
+    pub fn frames_in_line(&self) -> u32 {
+        // SAFETY: plain call on an owned gpu.
+        unsafe { ffi::bsv_gpu_frames_in_line(self.ptr.as_ptr()) }.max(0) as u32
+    }
+
     /// Forget every queued frame: after a seek, or before another file.
     pub fn reset(&mut self) {
         // SAFETY: plain call on an owned gpu.

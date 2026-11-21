@@ -21,7 +21,9 @@ Early. What works today, on the Mac:
 - Sound: every codec FFmpeg decodes (AAC, AC-3, E-AC-3, DTS, TrueHD, FLAC, Opus ...), on the
   default output device, at the track's own sample rate when the device offers it; more channels
   than the device has are mixed down
-- The picture follows the sound device's clock, so sound is never stretched or dropped to keep sync
+- The picture follows the sound device's clock, so sound is never stretched or dropped to keep
+  sync, and is drawn for the moment it will be seen rather than the moment it is drawn. Measured
+  on the Mac (`scripts/sync-check.sh`): a flash within a display refresh or two of its beep
 - Subtitles: text (SRT, ASS/SSA with its own styles and the fonts inside the file, WebVTT, MP4
   text) drawn by libass at the display's resolution; picture subtitles (Blu-ray PGS, DVD); and
   subtitle files next to the video (`film.srt`, `film.ru.ass`). In HDR, subtitle white sits at
@@ -71,7 +73,8 @@ the signal panel offers the choice, and it is remembered.
   plays into a swapchain that the application shows in one of its panels.
 - `windows/BitSpringVideo`: the Windows application, in C# and WinUI 3. It talks to the core
   the way the Mac's interface does: state as JSON, commands as text.
-- `scripts/`: builds the application bundle and gathers its libraries.
+- `scripts/`: builds the application bundle and gathers its libraries; `sync-check.sh` records
+  the player's window with its sound and measures how far a flash is from its beep.
 - `assets/icon/`: the icon and the script that draws it.
 - `testdata/make-clips.sh`: generates test clips: grey patches at known luminance, and a flash
   with a beep every second for checking that picture and sound coincide.

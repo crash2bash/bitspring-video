@@ -1694,6 +1694,11 @@ void bsv_gpu_set_dolby_vision(bsv_gpu *g, int use)
     g->ignore_dovi = !use;
 }
 
+int bsv_gpu_frames_in_line(const bsv_gpu *g)
+{
+    return pl_swapchain_latency(g->sw);
+}
+
 void bsv_gpu_reset(bsv_gpu *g)
 {
     pl_queue_reset(g->queue);
@@ -1854,6 +1859,12 @@ int bsv_gpu_render(bsv_gpu *g, double pts, double vsync, const struct bsv_target
         .pts = pts,
         .radius = pl_frame_mix_radius(params),
         .vsync_duration = vsync,
+        // The time asked for is the sound's, and is to be taken as given. Left at its default
+        // the queue moves that time onto a frame's own whenever the two come within a
+        // millisecond, and keeps every move it has made: at 23.976 frames on a 120 Hz display
+        // they meet on every frame, so the picture ran at 24 and left the sound behind by a
+        // millisecond a second.
+        .drift_compensation = 0,
         .get_frame = pull_frame,
         .priv = &ctx,
     ));

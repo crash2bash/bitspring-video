@@ -218,6 +218,10 @@ void bsv_gpu_reset(bsv_gpu *g);
 // taken from now on: drop the queued ones and decode again from the current position.
 void bsv_gpu_set_dolby_vision(bsv_gpu *g, int use);
 
+// How many refreshes of the display a picture waits in line between being drawn and being
+// shown: the pictures the surface holds ahead of the one on screen.
+int bsv_gpu_frames_in_line(const bsv_gpu *g);
+
 // Subtitles. kind: 0 off, 1 text (header: the stream's ASS header, or NULL for the built-in
 // style), 2 pictures. Fonts must be added before the first text track begins.
 void bsv_gpu_subs_add_font(bsv_gpu *g, const char *name, const void *data, int len);

@@ -245,6 +245,7 @@ unsafe extern "C" {
     pub fn bsv_gpu_set_options(g: *mut bsv_gpu, preset: c_int, options: *const c_char) -> c_int;
     pub fn bsv_gpu_reset(g: *mut bsv_gpu);
     pub fn bsv_gpu_set_dolby_vision(g: *mut bsv_gpu, use_it: c_int);
+    pub fn bsv_gpu_frames_in_line(g: *const bsv_gpu) -> c_int;
     pub fn bsv_gpu_subs_add_font(
         g: *mut bsv_gpu,
         name: *const c_char,

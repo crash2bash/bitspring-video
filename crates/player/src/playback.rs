@@ -1086,6 +1086,10 @@ fn render_loop(
     let mut muted = options.muted;
     let mut stats = RenderStats::default();
     let mut failures = 0u32;
+    // The time the last picture was drawn for.
+    let mut drawn_for = f64::MIN;
+    // When the sound belonging to the last picture is over.
+    let mut over_at: Option<Instant> = None;
     let mut result = Ok(());
     // Commands the loop gives itself: the starting position, a subtitle file that turned up.
     let mut pending: VecDeque<Command> = VecDeque::new();
@@ -1206,6 +1210,8 @@ fn render_loop(
                 });
                 gpu.reset();
                 gpu.clear_subtitles();
+                drawn_for = f64::MIN;
+                over_at = None;
                 timeline.jump(to);
                 waiting_for_picture = true;
                 ended = false;
@@ -1322,10 +1328,18 @@ fn render_loop(
             }
         };
 
-        match gpu.render(timeline.position(), vsync, &output, &mut pull) {
+        // A picture drawn now is seen once those in line before it have had their refresh
+        // each (measured on the Mac at 120 Hz: 20 to 30 ms, with three in line), so the one
+        // drawn is the one that belongs to that moment: it then meets its sound. Never an
+        // earlier time than the last one, which the queue of frames could not go back to.
+        let ahead = gpu.frames_in_line() as f64 * vsync;
+        let moment = (timeline.position() + ahead).max(drawn_for);
+        match gpu.render(moment, vsync, &output, &mut pull) {
             Ok((RenderStatus::Shown, s)) => {
                 failures = 0;
                 stats = s;
+                drawn_for = moment;
+                over_at = None;
                 if waiting_for_picture {
                     waiting_for_picture = false;
                     if !paused {
@@ -1342,11 +1356,13 @@ fn render_loop(
                 if s.output_transfer.is_some() {
                     stats = s;
                 }
-                if !ended {
+                // The time asked for runs ahead of the sound: the sound has that much left.
+                let over = *over_at.get_or_insert(Instant::now() + Duration::from_secs_f64(ahead));
+                if !ended && Instant::now() >= over {
                     ended = true;
                     timeline.hold();
                 }
-                thread::sleep(Duration::from_millis(30));
+                thread::sleep(Duration::from_millis(if ended { 30 } else { 2 }));
             }
             Err(e) => {
                 failures += 1;
