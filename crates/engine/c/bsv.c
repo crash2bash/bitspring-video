@@ -1889,6 +1889,7 @@ int bsv_gpu_render(bsv_gpu *g, double pts, double vsync, const struct bsv_target
     if (g->subs_kind && subs_prepare(g, pts, &out, &subtitle, &subtitle_part)) {
         out.overlays = &subtitle;
         out.num_overlays = 1;
+        stats->subtitle_shown = 1;
     }
 
     stats->out_primaries = primaries_out(out.color.primaries);

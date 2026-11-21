@@ -794,6 +794,8 @@ pub struct RenderStats {
     pub scene_nits: f32,
     pub dolby_vision: bool,
     pub hdr10_plus: bool,
+    /// A subtitle was drawn over this frame.
+    pub subtitle_shown: bool,
     /// The surface the system actually gave us.
     pub output_primaries: Option<Primaries>,
     pub output_transfer: Option<Transfer>,
@@ -1062,6 +1064,7 @@ impl Gpu {
             scene_nits: c.src_scene_max_nits,
             dolby_vision: c.src_dolby_vision != 0,
             hdr10_plus: c.src_hdr10_plus != 0,
+            subtitle_shown: c.subtitle_shown != 0,
             output_primaries: primaries_from_c(c.out_primaries),
             output_transfer: transfer_from_c(c.out_transfer),
             output_nits: (c.out_min_nits, c.out_max_nits),

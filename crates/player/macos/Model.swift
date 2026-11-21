@@ -258,9 +258,26 @@ final class PlayerModel: ObservableObject {
             hovered.removeAll()
         }
         if isPlaying != wasPlaying { isPlaying ? scheduleHide() : reveal() }
+        keepAwake(isPlaying)
     }
 
     var isPlaying: Bool { status.file != nil && !status.paused && !status.ended }
+
+    /// Held while a film plays: nobody touches the keyboard for two hours, and without this
+    /// the display dims and the Mac goes to sleep in the middle of it. Let go on pause and at
+    /// the end, so that a paused film does not keep the screen on all night.
+    private var awake: NSObjectProtocol?
+
+    private func keepAwake(_ wanted: Bool) {
+        if wanted, awake == nil {
+            awake = ProcessInfo.processInfo.beginActivity(
+                options: [.idleDisplaySleepDisabled, .idleSystemSleepDisabled],
+                reason: "Playing a film")
+        } else if !wanted, let held = awake {
+            ProcessInfo.processInfo.endActivity(held)
+            awake = nil
+        }
+    }
 
     func seek(to seconds: Double) {
         let target = max(0, min(seconds, status.duration))

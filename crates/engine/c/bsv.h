@@ -183,6 +183,7 @@ struct bsv_render_stats {
     float src_scene_max_nits;               // dynamic metadata for this scene, 0 when absent
     int src_dolby_vision;                   // the frame carries a Dolby Vision RPU that is applied
     int src_hdr10_plus;
+    int subtitle_shown;                     // a subtitle was drawn over this frame
 
     // The surface actually obtained from the system.
     int out_primaries, out_transfer;

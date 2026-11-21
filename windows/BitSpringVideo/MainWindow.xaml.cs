@@ -221,8 +221,23 @@ public sealed partial class MainWindow : Window
         if (showWhenReady != null) ShowWhenReady();
     }
 
+    /// <summary>
+    /// While a film plays nobody touches the keyboard, and without this the display goes dark
+    /// and the machine to sleep in the middle of it. Let go on pause and at the end.
+    /// </summary>
+    private void KeepAwake(bool wanted)
+    {
+        if (wanted == awake) return;
+        awake = wanted;
+        const uint untilToldOtherwise = 0x80000000, display = 0x00000002, machine = 0x00000001;
+        Native.SetThreadExecutionState(wanted ? untilToldOtherwise | display | machine : untilToldOtherwise);
+    }
+
+    private bool awake;
+
     private void Apply(PlayerState s)
     {
+        KeepAwake(s.IsPlaying);
         var open = s.File != null;
         Empty.Visibility = open ? Visibility.Collapsed : Visibility.Visible;
         Chrome.Visibility = open ? Visibility.Visible : Visibility.Collapsed;

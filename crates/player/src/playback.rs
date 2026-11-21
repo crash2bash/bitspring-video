@@ -779,6 +779,14 @@ fn read_loop(mut source: Source, reading: Reading) {
                 if sidecar.is_none() {
                     subtitles = open_subtitles(&source, generation, &news);
                 }
+            } else if sidecar.is_none() {
+                // The same track as before, said again: the renderer listens only to what is
+                // said since the latest seek, and the first seek of all (to where a film is
+                // picked up) comes before it has heard what the track is.
+                let _ = news.send(FromReader::Subtitles {
+                    generation,
+                    kind: subtitles.as_ref().map(SubtitleDecoder::kind),
+                });
             }
             if let Some(path) = &sidecar {
                 send_sidecar(path, generation, &news);

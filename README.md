@@ -30,7 +30,8 @@ Early. What works today, on the Mac:
 - Settings, each taking effect on the picture as it is changed: the display's peak brightness
   (its own figure, or yours), rendering quality, hardware decoding; subtitle size, subtitle
   brightness in HDR, preferred subtitle and sound languages; picture delay for lip sync
-- Pause, seeking, volume, full screen
+- Pause, seeking, volume, full screen; the display and the machine stay awake while a film
+  plays, and are let go on pause
 - A film is picked up where it was left, with the sound and subtitle tracks chosen for it; a
   note offers its beginning instead. A film watched to its credits starts from the beginning
 - A native interface in the system's Liquid Glass (macOS 26 or later): open or drop a file,

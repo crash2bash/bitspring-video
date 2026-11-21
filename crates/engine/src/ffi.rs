@@ -130,6 +130,7 @@ pub struct bsv_render_stats {
     pub src_scene_max_nits: c_float,
     pub src_dolby_vision: c_int,
     pub src_hdr10_plus: c_int,
+    pub subtitle_shown: c_int,
     pub out_primaries: c_int,
     pub out_transfer: c_int,
     pub out_max_nits: c_float,

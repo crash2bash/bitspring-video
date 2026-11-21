@@ -22,6 +22,13 @@ internal static class Native
     [DllImport(Library)]
     public static extern void bsv_host_destroy(IntPtr host);
 
+    /// <summary>
+    /// Tells Windows what this thread needs kept on. 0x80000000 "until told otherwise",
+    /// 0x00000002 the display, 0x00000001 the machine.
+    /// </summary>
+    [DllImport("kernel32.dll")]
+    public static extern uint SetThreadExecutionState(uint flags);
+
     [DllImport(Library)]
     public static extern void bsv_host_resize(IntPtr host, int width, int height, float scale);
 

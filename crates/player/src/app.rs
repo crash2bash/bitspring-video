@@ -723,9 +723,14 @@ impl App {
             Some((since, from)) => {
                 let drift = (status.position - from) - since.elapsed().as_secs_f64();
                 println!(
-                    "Clock:   {:.3} s, {:+.1} ms against the system clock",
+                    "Clock:   {:.3} s, {:+.1} ms against the system clock{}",
                     status.position,
-                    drift * 1000.0
+                    drift * 1000.0,
+                    if status.stats.subtitle_shown {
+                        ", a subtitle on screen"
+                    } else {
+                        ""
+                    }
                 );
             }
         }
