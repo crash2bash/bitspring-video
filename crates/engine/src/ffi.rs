@@ -196,6 +196,7 @@ unsafe extern "C" {
     ) -> *mut bsv_video;
     pub fn bsv_video_close(v: *mut bsv_video);
     pub fn bsv_video_info(v: *const bsv_video, out: *mut bsv_media_info);
+    pub fn bsv_video_is_hardware(v: *const bsv_video) -> c_int;
     pub fn bsv_video_send(v: *mut bsv_video, avpacket: *mut c_void) -> c_int;
     pub fn bsv_video_receive(v: *mut bsv_video, out: *mut bsv_frame) -> c_int;
     pub fn bsv_video_flush(v: *mut bsv_video, seconds: c_double);

@@ -518,6 +518,13 @@ impl VideoDecoder {
         MediaInfo::from_c(&c)
     }
 
+    /// Whether the platform's video decoder is doing the decoding now. It can refuse a stretch
+    /// of the stream part-way through a film; software then takes over without a break.
+    pub fn is_hardware(&self) -> bool {
+        // SAFETY: plain call on an owned decoder.
+        unsafe { ffi::bsv_video_is_hardware(self.ptr.as_ptr()) != 0 }
+    }
+
     /// Feed one packet, or `None` at the end of the file; then call [`receive`](Self::receive)
     /// until it stops returning frames.
     pub fn send(&mut self, packet: Option<Packet>) -> Result<(), Error> {

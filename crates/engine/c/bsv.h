@@ -129,10 +129,13 @@ bsv_sub_event *bsv_subdec_decode(bsv_subdec *d, void *avpacket);
 void bsv_sub_event_free(bsv_sub_event *e);
 
 // Both decoders copy what they need from the source: create them before the threads start.
-// hardware: 1 to use the platform's video decoder when the codec allows.
+// hardware: 1 to use the platform's video decoder when the codec allows. If it later refuses part
+// of the stream, decoding goes on in software from the same picture.
 bsv_video *bsv_video_open(const bsv_source *s, int hardware, char *error, int error_len);
 void bsv_video_close(bsv_video *v);
 void bsv_video_info(const bsv_video *v, struct bsv_media_info *out);
+// Whether the platform's video decoder is doing the decoding now: it can stop part-way through.
+int bsv_video_is_hardware(const bsv_video *v);
 // Feed one packet (consumed), or NULL at the end of the file. Then call receive until it returns 0.
 int bsv_video_send(bsv_video *v, void *avpacket);
 // 1: a frame was written to out. 0: wants another packet. 2: nothing left after the end. Negative: error.

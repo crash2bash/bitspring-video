@@ -24,6 +24,8 @@ Early. What works today, on the Mac:
 - The picture follows the sound device's clock, so sound is never stretched or dropped to keep
   sync, and is drawn for the moment it will be seen rather than the moment it is drawn. Measured
   on the Mac (`scripts/sync-check.sh`): a flash within a display refresh or two of its beep
+- Decoding on the platform's video decoder; where it refuses a stretch of a file that software
+  reads without complaint, software takes over at the same picture and the film goes on
 - Subtitles: text (SRT, ASS/SSA with its own styles and the fonts inside the file, WebVTT, MP4
   text) drawn by libass at the display's resolution; picture subtitles (Blu-ray PGS, DVD); and
   subtitle files next to the video (`film.srt`, `film.ru.ass`). In HDR, subtitle white sits at

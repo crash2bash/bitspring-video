@@ -8,6 +8,7 @@
 #include <initguid.h>
 #endif
 
+#include <float.h>
 #include <limits.h>
 #include <math.h>
 #include <stdbool.h>
@@ -25,6 +26,7 @@
 #include <libavutil/mastering_display_metadata.h>
 #include <libavutil/opt.h>
 #include <libavutil/pixdesc.h>
+#include <libavutil/time.h>
 #include <libswresample/swresample.h>
 
 #include <ass/ass.h>
@@ -625,6 +627,8 @@ bsv_sub_event *bsv_subdec_decode(bsv_subdec *d, void *avpacket)
 
 struct bsv_video {
     AVCodecContext *dec;
+    AVCodecParameters *par; // what the decoder was made from, to make another
+    AVRational stream_time_base;
     AVBufferRef *hw_device;
     enum AVPixelFormat hw_format;
     AVFrame *frame;
@@ -633,7 +637,21 @@ struct bsv_video {
     double next_pts;    // where a frame without a timestamp goes
     double skip_before; // after a seek: frames that end before this are not wanted
     struct bsv_media_info info;
+
+    // While the hardware decodes, the packets it was given since the keyframe before the last
+    // one are kept, so that software can take over from there if the hardware gives up.
+    AVPacket **recent;
+    int recent_len, recent_cap;
+    int recent_key;    // where in `recent` the last keyframe is
+    int replay;        // software is catching up: the next of `recent` to give it; else -1
+    int end_waiting;   // the file ended while it was catching up
+    double handed_out; // the time of the last frame handed out
+    double not_again;  // frames up to this time were handed out by the hardware already
+    int64_t fell_at;   // when the hardware gave up, on the system's clock
 };
+
+// The most packets kept: a stream that marks no keyframes would otherwise keep them all.
+#define BSV_RECENT_MAX 4096
 
 static enum AVPixelFormat pick_format(AVCodecContext *ctx, const enum AVPixelFormat *formats)
 {
@@ -716,14 +734,52 @@ static void fill_info(bsv_video *v, const bsv_source *s)
     }
 }
 
+static void forget_recent(bsv_video *v)
+{
+    for (int i = 0; i < v->recent_len; i++)
+        av_packet_free(&v->recent[i]);
+    v->recent_len = 0;
+    v->recent_key = 0;
+    v->replay = -1;
+    v->end_waiting = 0;
+}
+
 void bsv_video_close(bsv_video *v)
 {
     if (!v)
         return;
+    forget_recent(v);
+    av_free(v->recent);
     av_frame_free(&v->frame);
     avcodec_free_context(&v->dec);
+    avcodec_parameters_free(&v->par);
     av_buffer_unref(&v->hw_device);
     av_free(v);
+}
+
+// Make the decoder, on the hardware or not. Returns what went wrong in words, or NULL.
+static const char *start_decoder(bsv_video *v, int hardware, int *code)
+{
+    const AVCodec *codec = avcodec_find_decoder(v->par->codec_id);
+    *code = 0;
+    if (!codec)
+        return "no decoder for this video in this build";
+    v->dec = avcodec_alloc_context3(codec);
+    if (!v->dec)
+        return "cannot set up the video decoder";
+    if ((*code = avcodec_parameters_to_context(v->dec, v->par)) < 0)
+        return "cannot set up the video decoder";
+    v->dec->pkt_timebase = v->stream_time_base;
+    v->dec->opaque = v;
+    v->dec->thread_count = 0;
+    // Film grain is synthesised on the GPU at output resolution rather than baked in by the decoder.
+    v->dec->export_side_data |= AV_CODEC_EXPORT_DATA_FILM_GRAIN;
+    v->info.hardware = 0;
+    if (hardware)
+        enable_hardware(v, codec);
+    if ((*code = avcodec_open2(v->dec, codec, NULL)) < 0)
+        return "cannot start the video decoder";
+    return NULL;
 }
 
 bsv_video *bsv_video_open(const bsv_source *s, int hardware, char *error, int error_len)
@@ -736,30 +792,20 @@ bsv_video *bsv_video_open(const bsv_source *s, int hardware, char *error, int er
     if (!v)
         return NULL;
     v->hw_format = AV_PIX_FMT_NONE;
+    v->stream_time_base = s->video->time_base;
     v->time_base = av_q2d(s->video->time_base);
     v->origin = s->origin;
+    v->replay = -1;
+    v->handed_out = v->not_again = -DBL_MAX;
 
-    int ret = 0;
-    const AVCodec *codec = avcodec_find_decoder(s->video->codecpar->codec_id);
-    if (!codec) {
-        set_error(error, error_len, "no decoder for this video in this build", 0);
+    if (!(v->par = avcodec_parameters_alloc()) || avcodec_parameters_copy(v->par, s->video->codecpar) < 0) {
+        set_error(error, error_len, "cannot set up the video decoder", 0);
         goto fail;
     }
-    v->dec = avcodec_alloc_context3(codec);
-    if (!v->dec || (ret = avcodec_parameters_to_context(v->dec, s->video->codecpar)) < 0) {
-        set_error(error, error_len, "cannot set up the video decoder", ret);
-        goto fail;
-    }
-    v->dec->pkt_timebase = s->video->time_base;
-    v->dec->opaque = v;
-    v->dec->thread_count = 0;
-    // Film grain is synthesised on the GPU at output resolution rather than baked in by the decoder.
-    v->dec->export_side_data |= AV_CODEC_EXPORT_DATA_FILM_GRAIN;
-    if (hardware)
-        enable_hardware(v, codec);
-
-    if ((ret = avcodec_open2(v->dec, codec, NULL)) < 0) {
-        set_error(error, error_len, "cannot start the video decoder", ret);
+    int code;
+    const char *problem = start_decoder(v, hardware, &code);
+    if (problem) {
+        set_error(error, error_len, problem, code);
         goto fail;
     }
     if (!(v->frame = av_frame_alloc()))
@@ -824,7 +870,7 @@ static int produce(bsv_video *v, struct bsv_frame *out)
                      ? v->frame->best_effort_timestamp * v->time_base - v->origin
                      : v->next_pts;
     v->next_pts = pts + duration;
-    if (pts + duration <= v->skip_before) {
+    if (pts + duration <= v->skip_before || pts <= v->not_again) {
         av_frame_unref(v->frame);
         return 3;
     }
@@ -850,39 +896,164 @@ static int produce(bsv_video *v, struct bsv_frame *out)
     out->avframe = frame;
     out->pts = pts;
     out->duration = duration;
+    v->handed_out = pts;
     return 1;
+}
+
+// Add a packet to those kept. Takes the packet.
+static void keep(bsv_video *v, AVPacket *pkt)
+{
+    if (v->recent_len == v->recent_cap) {
+        int cap = v->recent_cap ? v->recent_cap * 2 : 256;
+        AVPacket **grown = av_realloc_array(v->recent, cap, sizeof(*grown));
+        if (!grown) {
+            av_packet_free(&pkt);
+            return;
+        }
+        v->recent = grown;
+        v->recent_cap = cap;
+    }
+    v->recent[v->recent_len++] = pkt;
+}
+
+// Keep a packet the hardware is about to be given. A picture may lean on the pictures of the
+// stretch before its own keyframe, so two stretches are kept: from the keyframe before last.
+static void remember(bsv_video *v, const AVPacket *pkt)
+{
+    if (v->recent_len >= BSV_RECENT_MAX)
+        forget_recent(v);
+    if (pkt->flags & AV_PKT_FLAG_KEY) {
+        int gone = v->recent_key;
+        for (int i = 0; i < gone; i++)
+            av_packet_free(&v->recent[i]);
+        memmove(v->recent, v->recent + gone, (v->recent_len - gone) * sizeof(*v->recent));
+        v->recent_len -= gone;
+        v->recent_key = v->recent_len;
+    }
+    AVPacket *copy = av_packet_clone(pkt);
+    if (copy)
+        keep(v, copy);
+}
+
+// The hardware decoder has refused part of the stream. It does that for whole stretches a
+// software decoder reads without complaint, and a film should not stop for it: decode the rest
+// in software, starting again from the packets kept, and hand out only what was not handed out
+// before. Returns 0 when software has taken over.
+static int fall_back(bsv_video *v, int reason)
+{
+    char why[AV_ERROR_MAX_STRING_SIZE];
+    av_strerror(reason, why, sizeof(why));
+    if (v->handed_out > -DBL_MAX)
+        av_log(NULL, AV_LOG_WARNING,
+               "the hardware decoder gave up after the picture at %.3f s (%s): decoding in software from here\n",
+               v->handed_out, why);
+    else
+        av_log(NULL, AV_LOG_WARNING,
+               "the hardware decoder gave up before its first picture (%s): decoding in software\n", why);
+
+    avcodec_free_context(&v->dec);
+    av_buffer_unref(&v->hw_device);
+    v->hw_format = AV_PIX_FMT_NONE;
+    int code;
+    if (start_decoder(v, 0, &code)) {
+        // No decoder at all now: the calls below answer with an error from here on.
+        avcodec_free_context(&v->dec);
+        forget_recent(v);
+        return -1;
+    }
+    v->not_again = v->handed_out;
+    // From the keyframe before last, unless the last one has itself been handed out: then so
+    // has every picture that leans on the stretch before it, and it is enough to start there.
+    v->replay = 0;
+    if (v->recent_key < v->recent_len) {
+        const AVPacket *key = v->recent[v->recent_key];
+        if ((key->flags & AV_PKT_FLAG_KEY) && key->pts != AV_NOPTS_VALUE &&
+            key->pts * v->time_base - v->origin <= v->handed_out)
+            v->replay = v->recent_key;
+    }
+    v->fell_at = av_gettime_relative();
+    return 0;
 }
 
 int bsv_video_send(bsv_video *v, void *avpacket)
 {
     AVPacket *pkt = avpacket;
+    if (!v->dec) {
+        av_packet_free(&pkt);
+        return AVERROR_DECODER_NOT_FOUND;
+    }
+    if (v->replay >= 0) {
+        // Software is still going through the packets kept; this one waits its turn behind them.
+        if (pkt)
+            keep(v, pkt);
+        else
+            v->end_waiting = 1;
+        return 0;
+    }
+    if (v->info.hardware && pkt)
+        remember(v, pkt);
     int ret = avcodec_send_packet(v->dec, pkt);
     av_packet_free(&pkt);
     // A damaged packet is skipped; the decoder recovers at the next keyframe.
     if (ret == AVERROR_INVALIDDATA || ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
         return 0;
+    if (ret < 0 && v->info.hardware && fall_back(v, ret) == 0)
+        return 0;
     return ret;
+}
+
+// While software catches up: give it the next packet kept. Returns 0 when there are no more.
+static int replay_one(bsv_video *v)
+{
+    if (v->replay < v->recent_len) {
+        if (avcodec_send_packet(v->dec, v->recent[v->replay]) != AVERROR(EAGAIN))
+            v->replay++;
+        return 1;
+    }
+    int ended = v->end_waiting;
+    av_log(NULL, AV_LOG_INFO, "software caught up with the film %.0f ms after the hardware gave up\n",
+           (av_gettime_relative() - v->fell_at) / 1000.0);
+    forget_recent(v);
+    if (ended)
+        avcodec_send_packet(v->dec, NULL);
+    return ended;
 }
 
 int bsv_video_receive(bsv_video *v, struct bsv_frame *out)
 {
+    if (!v->dec)
+        return AVERROR_DECODER_NOT_FOUND;
     for (;;) {
         int ret = avcodec_receive_frame(v->dec, v->frame);
-        if (ret == AVERROR(EAGAIN))
+        if (ret == AVERROR(EAGAIN)) {
+            if (v->replay >= 0 && replay_one(v))
+                continue;
             return 0;
+        }
         if (ret == AVERROR_EOF)
             return 2;
-        if (ret < 0)
+        if (ret < 0) {
+            if (v->info.hardware && fall_back(v, ret) == 0)
+                continue;
             return ret;
+        }
         ret = produce(v, out);
         if (ret != 3)
             return ret;
     }
 }
 
+int bsv_video_is_hardware(const bsv_video *v)
+{
+    return v->info.hardware;
+}
+
 void bsv_video_flush(bsv_video *v, double seconds)
 {
-    avcodec_flush_buffers(v->dec);
+    if (v->dec)
+        avcodec_flush_buffers(v->dec);
+    forget_recent(v);
+    v->handed_out = v->not_again = -DBL_MAX;
     v->next_pts = seconds;
     v->skip_before = seconds;
 }

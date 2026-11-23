@@ -857,6 +857,7 @@ fn video_loop(
     let mut generation = 0u64;
     let mut skip_before = 0.0f64;
     let mut info_sent = false;
+    let mut on_hardware = false;
 
     // Hand a message over, giving up if a seek or quit makes it stale while the queue is full.
     // Returns `false` only when the renderer is gone.
@@ -902,8 +903,10 @@ fn video_loop(
         loop {
             match decoder.receive() {
                 Ok(Decoded::Some(frame)) => {
-                    if !info_sent {
+                    // Again if the hardware has since handed the stream over to software.
+                    if !info_sent || decoder.is_hardware() != on_hardware {
                         info_sent = true;
+                        on_hardware = decoder.is_hardware();
                         deliver(FromVideo::Info(decoder.info()), generation);
                     }
                     // After a seek the decoder starts at a keyframe before the target.
