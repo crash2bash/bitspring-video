@@ -23,15 +23,20 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/vulkan/icd.d" "$APP/Contents/Frameworks"
 cp target/release/bitspring-video "$APP/Contents/MacOS/bitspring-video"
 
-# The icon, at every size the system asks for.
-ICONSET="$(mktemp -d)/AppIcon.iconset"
-mkdir -p "$ICONSET"
-for size in 16 32 128 256 512; do
-  sips -z $size $size assets/icon/icon.png --out "$ICONSET/icon_${size}x${size}.png" >/dev/null
-  sips -z $((size * 2)) $((size * 2)) assets/icon/icon.png --out "$ICONSET/icon_${size}x${size}@2x.png" >/dev/null
-done
-iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
-rm -rf "$(dirname "$ICONSET")"
+# The icons, at every size the system asks for: the app's own, and the one for its files.
+make_icns() { # picture name
+  local iconset
+  iconset="$(mktemp -d)/$2.iconset"
+  mkdir -p "$iconset"
+  for size in 16 32 128 256 512; do
+    sips -z $size $size "$1" --out "$iconset/icon_${size}x${size}.png" >/dev/null
+    sips -z $((size * 2)) $((size * 2)) "$1" --out "$iconset/icon_${size}x${size}@2x.png" >/dev/null
+  done
+  iconutil -c icns "$iconset" -o "$APP/Contents/Resources/$2.icns"
+  rm -rf "$(dirname "$iconset")"
+}
+make_icns assets/icon/icon.png AppIcon
+make_icns assets/icon/document.png Document
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -62,6 +67,9 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <dict>
       <key>CFBundleTypeName</key><string>Video</string>
       <key>CFBundleTypeRole</key><string>Viewer</string>
+      <!-- Without a picture of its own, a video file shows the system's camcorder page even
+           where this player is the one chosen to open it. -->
+      <key>CFBundleTypeIconFile</key><string>Document</string>
       <!-- Offered in "Open With"; never takes a file type away from the player already chosen. -->
       <key>LSHandlerRank</key><string>Alternate</string>
       <key>LSItemContentTypes</key>

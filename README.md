@@ -75,7 +75,8 @@ the signal panel offers the choice, and it is remembered.
   the way the Mac's interface does: state as JSON, commands as text.
 - `scripts/`: builds the application bundle and gathers its libraries; `sync-check.sh` records
   the player's window with its sound and measures how far a flash is from its beep.
-- `assets/icon/`: the icon and the script that draws it.
+- `assets/icon/`: the app's icon, the one shown on video files it opens by default, and the
+  scripts that draw them.
 - `testdata/make-clips.sh`: generates test clips: grey patches at known luminance, and a flash
   with a beep every second for checking that picture and sound coincide.
 
