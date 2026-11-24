@@ -1,48 +1,241 @@
 // Draws the icon shown on video files the player opens by default:
-// `swift assets/icon/make-document-icon.swift assets/icon/icon.png assets/icon/document.png`
 //
-// The system's own blank page with the app icon on it, which is what macOS composes by itself
-// for most kinds of file. For anything that counts as a movie it does not: it shows its own
-// camcorder page whatever the app says, unless the app names a picture of its own.
+//   swift assets/icon/make-document-icon.swift MKV Document-MKV.iconset   every size, for iconutil
+//   swift assets/icon/make-document-icon.swift MKV Document-MKV.ico       every size, for Windows
+//   swift assets/icon/make-document-icon.swift MKV preview.png            one picture, 1024 wide
+//   swift assets/icon/make-document-icon.swift "" Document.iconset        with no format on it
+//
+// The Mac's are drawn when the application is bundled (scripts/bundle-macos.sh). Windows is
+// built where there is no Swift, so its pictures are kept in windows/BitSpringVideo/Assets;
+// after changing this file, draw them again:
+//
+//   for f in MKV WEBM MP4 M4V MOV TS M2TS AVI; do
+//     swift assets/icon/make-document-icon.swift $f windows/BitSpringVideo/Assets/Document-$f.ico
+//   done
+//   swift assets/icon/make-document-icon.swift "" windows/BitSpringVideo/Assets/Document.ico
+//
+// The page is the app icon's own slate with its gold winding drawn large on it, and the name of
+// the format underneath: a film in a folder looks like this player's and says what it is. For
+// anything that counts as a movie macOS shows its own camcorder page whatever app is chosen to
+// open it, unless that app names a picture for its files.
+//
+// Each size is drawn for itself, not shrunk from the largest: below a certain size the winding
+// would turn to mud and the letters to dust, so small pictures get fewer, heavier lines and no
+// name, and the smallest a plain triangle.
 
 import AppKit
-import UniformTypeIdentifiers
 
 let arguments = CommandLine.arguments
-let source = arguments.count > 1 ? arguments[1] : "icon.png"
-let output = arguments.count > 2 ? arguments[2] : "document.png"
-
-let size = 1024
-guard let mark = NSImage(contentsOfFile: source) else {
-    FileHandle.standardError.write("cannot read \(source)\n".data(using: .utf8)!)
-    exit(1)
+guard arguments.count == 3 else {
+    FileHandle.standardError.write("usage: make-document-icon.swift <FORMAT or \"\"> <out.iconset | out.ico | out.png>\n".data(using: .utf8)!)
+    exit(2)
 }
-let canvas = NSBitmapImageRep(
-    bitmapDataPlanes: nil, pixelsWide: size, pixelsHigh: size, bitsPerSample: 8, samplesPerPixel: 4,
-    hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
-canvas.size = NSSize(width: size, height: size)
+let format = arguments[1]
+let output = arguments[2]
 
-NSGraphicsContext.saveGraphicsState()
-NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: canvas)
-NSGraphicsContext.current?.imageInterpolation = .high
+let space = CGColorSpace(name: CGColorSpace.sRGB)!
 
-// The system draws this page a little larger than the pages it puts on files itself; brought
-// down to their size so a film does not stand taller than its neighbours in a folder.
-let fit = NSAffineTransform()
-fit.translateX(by: CGFloat(size) / 2, yBy: CGFloat(size) / 2)
-fit.scale(by: 0.965)
-fit.translateX(by: -CGFloat(size) / 2, yBy: -CGFloat(size) / 2)
-fit.concat()
+func color(_ hex: UInt32, _ alpha: CGFloat = 1) -> CGColor {
+    CGColor(
+        colorSpace: space,
+        components: [CGFloat((hex >> 16) & 0xFF) / 255, CGFloat((hex >> 8) & 0xFF) / 255, CGFloat(hex & 0xFF) / 255, alpha])!
+}
 
-// A file of no particular kind: a page with a folded corner and nothing on it.
-let page = NSWorkspace.shared.icon(for: .data)
-page.draw(in: NSRect(x: 0, y: 0, width: size, height: size))
+/// A play triangle with rounded corners, centred on its centre of mass, pointing right.
+/// The same shape as in `make-icon.swift`.
+func triangle(radius: CGFloat, rounding: CGFloat) -> CGPath {
+    let points = (0..<3).map { i -> CGPoint in
+        let angle = CGFloat(i) * 2 * .pi / 3
+        return CGPoint(x: cos(angle) * radius, y: sin(angle) * radius)
+    }
+    let path = CGMutablePath()
+    path.move(to: CGPoint(x: (points[0].x + points[1].x) / 2, y: (points[0].y + points[1].y) / 2))
+    for i in 1...3 {
+        path.addArc(tangent1End: points[i % 3], tangent2End: points[(i + 1) % 3], radius: rounding)
+    }
+    path.closeSubpath()
+    return path
+}
 
-// The page fills the canvas from 7% to 93% of its height and is narrower than it is tall; the
-// mark sits in the middle of it, a little below centre so the fold does not crowd it. The
-// picture of the app icon carries its own margin and shadow, hence the larger box.
-let side = CGFloat(size) * 0.48
-mark.draw(in: NSRect(x: (CGFloat(size) - side) / 2, y: CGFloat(size) * 0.44 - side / 2, width: side, height: side))
+// The page, in a canvas of 1024: where the system puts its own pages, so a film stands level
+// with its neighbours in a folder.
+let left: CGFloat = 180, right: CGFloat = 844, bottom: CGFloat = 72, top: CGFloat = 952
+let corner: CGFloat = 36
+let fold: CGFloat = 212
 
-NSGraphicsContext.restoreGraphicsState()
-try canvas.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: output))
+/// The page's outline, its upper right corner cut off along the fold.
+func pagePath() -> CGPath {
+    let path = CGMutablePath()
+    path.move(to: CGPoint(x: left + corner, y: bottom))
+    path.addArc(tangent1End: CGPoint(x: right, y: bottom), tangent2End: CGPoint(x: right, y: top), radius: corner)
+    path.addLine(to: CGPoint(x: right, y: top - fold))
+    path.addLine(to: CGPoint(x: right - fold, y: top))
+    path.addArc(tangent1End: CGPoint(x: left, y: top), tangent2End: CGPoint(x: left, y: bottom), radius: corner)
+    path.addArc(tangent1End: CGPoint(x: left, y: bottom), tangent2End: CGPoint(x: right, y: bottom), radius: corner)
+    path.closeSubpath()
+    return path
+}
+
+/// The corner folded over: the page's underside, lying on the page.
+func flapPath() -> CGPath {
+    let path = CGMutablePath()
+    path.move(to: CGPoint(x: right - fold, y: top))
+    path.addLine(to: CGPoint(x: right, y: top - fold))
+    path.addArc(
+        tangent1End: CGPoint(x: right - fold, y: top - fold), tangent2End: CGPoint(x: right - fold, y: top),
+        radius: corner * 1.2)
+    path.closeSubpath()
+    return path
+}
+
+/// `fill`: how much larger than the Mac's page to draw it. The Mac leaves a wide margin round
+/// every icon; Windows draws its pages to the edge of theirs.
+func draw(pixels: Int, fill: CGFloat = 1) -> CGImage {
+    let context = CGContext(
+        data: nil, width: pixels, height: pixels, bitsPerComponent: 8, bytesPerRow: 0, space: space,
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    let scale = CGFloat(pixels) / 1024 * fill
+    context.scaleBy(x: CGFloat(pixels) / 1024, y: CGFloat(pixels) / 1024)
+    context.translateBy(x: 512, y: 512)
+    context.scaleBy(x: fill, y: fill)
+    context.translateBy(x: -512, y: -512)
+
+    let named = !format.isEmpty && pixels >= 128
+    let page = pagePath()
+
+    // The page and the shadow it casts.
+    context.saveGState()
+    context.setShadow(offset: CGSize(width: 0, height: -10 * scale), blur: 22 * scale, color: color(0x000000, 0.34))
+    context.addPath(page)
+    context.setFillColor(color(0x16232A))
+    context.fillPath()
+    context.restoreGState()
+
+    context.saveGState()
+    context.addPath(page)
+    context.clip()
+    let slate = CGGradient(colorsSpace: space, colors: [color(0x2D404B), color(0x121D23)] as CFArray, locations: [0, 1])!
+    context.drawLinearGradient(slate, start: CGPoint(x: 512, y: top), end: CGPoint(x: 512, y: bottom), options: [])
+    // A thin light edge: on a dark folder background the slate would otherwise have no outline.
+    context.addPath(page)
+    context.setStrokeColor(color(0xFFFFFF, 0.16))
+    context.setLineWidth(max(6, 2 / scale))
+    context.strokePath()
+    context.restoreGState()
+
+    // The mark. With a name under it, it moves up and gives the name room.
+    let radius: CGFloat = named ? 268 : 280
+    let centre = CGPoint(x: 512 - radius * 0.126, y: named ? 600 : 512)
+    let strokes = CGMutablePath()
+    if pixels <= 32 {
+        strokes.addPath(
+            triangle(radius: radius * 0.92, rounding: radius * 0.2),
+            transform: CGAffineTransform(translationX: centre.x, y: centre.y))
+    } else {
+        // (how many triangles, each this much smaller, turned this many degrees further, line from, to)
+        let (count, shrink, turn, heavy, light): (Int, CGFloat, CGFloat, CGFloat, CGFloat) =
+            pixels >= 256 ? (13, 0.86, 9.5, 9.5, 5.5) : pixels >= 128 ? (9, 0.80, 14, 13, 8) : (5, 0.68, 24, 24, 15)
+        for i in 0..<count {
+            let t = CGFloat(i) / CGFloat(count - 1)
+            let r = radius * pow(shrink, CGFloat(i))
+            let transform = CGAffineTransform(translationX: centre.x, y: centre.y)
+                .rotated(by: CGFloat(i) * turn * .pi / 180)
+            let outline = triangle(radius: r, rounding: r * 0.2)
+                .copy(strokingWithWidth: heavy - (heavy - light) * t, lineCap: .round, lineJoin: .round, miterLimit: 4)
+            strokes.addPath(outline, transform: transform)
+        }
+    }
+    // Gold, lit from the upper left like the app icon's.
+    context.saveGState()
+    context.addPath(strokes)
+    context.clip(using: .winding)
+    let gold = CGGradient(
+        colorsSpace: space,
+        colors: [color(0xF0D58C), color(0xD9A441), color(0xB07E22), color(0xE2B95C)] as CFArray,
+        locations: [0, 0.4, 0.75, 1])!
+    context.drawLinearGradient(
+        gold, start: CGPoint(x: centre.x - radius * 0.75, y: centre.y + radius),
+        end: CGPoint(x: centre.x + radius * 0.9, y: centre.y - radius), options: [])
+    context.restoreGState()
+
+    // The name of the format, in the rounded letters that go with the triangle's corners.
+    if named {
+        var font = NSFont.systemFont(ofSize: 118, weight: .semibold)
+        if let rounded = font.fontDescriptor.withDesign(.rounded) {
+            font = NSFont(descriptor: rounded, size: 118) ?? font
+        }
+        let text = NSAttributedString(
+            string: format,
+            attributes: [
+                .font: font, .kern: 7,
+                .foregroundColor: NSColor(cgColor: color(0xEFEADF, 0.94))!,
+            ])
+        let line = CTLineCreateWithAttributedString(text)
+        let bounds = CTLineGetBoundsWithOptions(line, .useGlyphPathBounds)
+        // Centred on the page by what is seen: the last letter's spacing is not part of it.
+        context.textPosition = CGPoint(x: 512 - (bounds.width - 7) / 2 - bounds.minX, y: 168)
+        CTLineDraw(line, context)
+    }
+
+    // The folded corner, lighter than the page and casting a little shadow on it.
+    let flap = flapPath()
+    context.saveGState()
+    context.addPath(page)
+    context.clip()
+    context.setShadow(offset: CGSize(width: -6 * scale, height: -10 * scale), blur: 26 * scale, color: color(0x000000, 0.5))
+    context.addPath(flap)
+    context.setFillColor(color(0x52697A))
+    context.fillPath()
+    context.restoreGState()
+    context.saveGState()
+    context.addPath(flap)
+    context.clip()
+    let underside = CGGradient(colorsSpace: space, colors: [color(0x6B8494), color(0x3E535F)] as CFArray, locations: [0, 1])!
+    context.drawLinearGradient(
+        underside, start: CGPoint(x: right - fold, y: top - fold), end: CGPoint(x: right - fold * 0.4, y: top - fold * 0.4),
+        options: [.drawsAfterEndLocation])
+    context.restoreGState()
+
+    return context.makeImage()!
+}
+
+func png(_ image: CGImage) -> Data {
+    NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])!
+}
+
+func write(_ image: CGImage, to path: String) {
+    try! png(image).write(to: URL(fileURLWithPath: path))
+}
+
+/// A Windows icon file: a list of the sizes inside, then each as a PNG.
+func icon(_ pictures: [(pixels: Int, data: Data)]) -> Data {
+    func bytes<T: FixedWidthInteger>(_ value: T) -> Data {
+        withUnsafeBytes(of: value.littleEndian) { Data($0) }
+    }
+    var file = bytes(UInt16(0)) + bytes(UInt16(1)) + bytes(UInt16(pictures.count))
+    var offset = 6 + 16 * pictures.count
+    for picture in pictures {
+        // One byte each for width and height, where 0 stands for 256.
+        file += Data([UInt8(picture.pixels % 256), UInt8(picture.pixels % 256), 0, 0])
+        file += bytes(UInt16(1)) + bytes(UInt16(32)) + bytes(UInt32(picture.data.count)) + bytes(UInt32(offset))
+        offset += picture.data.count
+    }
+    for picture in pictures {
+        file += picture.data
+    }
+    return file
+}
+
+if output.hasSuffix(".iconset") {
+    try! FileManager.default.createDirectory(atPath: output, withIntermediateDirectories: true)
+    for points in [16, 32, 128, 256, 512] {
+        write(draw(pixels: points), to: "\(output)/icon_\(points)x\(points).png")
+        write(draw(pixels: points * 2), to: "\(output)/icon_\(points)x\(points)@2x.png")
+    }
+} else if output.hasSuffix(".ico") {
+    // The sizes Explorer asks for at its usual scales; anything between is made from the largest.
+    let pictures = [16, 20, 24, 32, 40, 48, 64, 256].map { (pixels: $0, data: png(draw(pixels: $0, fill: 1.1))) }
+    try! icon(pictures).write(to: URL(fileURLWithPath: output))
+} else {
+    write(draw(pixels: 1024), to: output)
+}

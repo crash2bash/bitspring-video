@@ -47,7 +47,9 @@ or to other files, whatever it claims to be.
 On Windows the same player runs through Direct3D 11, inside a native application (WinUI 3)
 with the same controls, panels and settings. It builds, plays and draws its interface on the
 build machine, which has neither a graphics card nor an HDR screen: HDR output, hardware
-decoding and sound on Windows have not yet been judged on a real machine.
+decoding and sound on Windows have not yet been judged on a real machine. It has no installer:
+each time it starts it tells Windows, for the person using it only, which files it opens and
+where it is now.
 
 Not there yet: playing from the network, choosing the output device, bitstream passthrough to a
 receiver.
@@ -77,8 +79,10 @@ the signal panel offers the choice, and it is remembered.
   the way the Mac's interface does: state as JSON, commands as text.
 - `scripts/`: builds the application bundle and gathers its libraries; `sync-check.sh` records
   the player's window with its sound and measures how far a flash is from its beep.
-- `assets/icon/`: the app's icon, the one shown on video files it opens by default, and the
-  scripts that draw them.
+- `assets/icon/`: the app's icon and the script that draws it; and the script that draws the
+  pictures for video files, one for each format with the format's name on it. A file wears one
+  where this player is the one chosen to open it: the player offers itself for video files on
+  both systems, and never takes a file type from the player already chosen.
 - `testdata/make-clips.sh`: generates test clips: grey patches at known luminance, and a flash
   with a beep every second for checking that picture and sound coincide.
 

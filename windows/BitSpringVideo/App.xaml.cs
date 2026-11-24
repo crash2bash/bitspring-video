@@ -20,6 +20,8 @@ public partial class App : Application
         // "XAML parsing failed", with nothing to say which one.
         DebugSettings.IsXamlResourceReferenceTracingEnabled = true;
         DebugSettings.XamlResourceReferenceFailed += (_, e) => Note("Markup: " + e.Message);
+        // Aside, so that a slow registry does not hold the window back.
+        Task.Run(FileTypes.Register);
     }
 
     protected override void OnLaunched(LaunchActivatedEventArgs args)

@@ -242,6 +242,39 @@ jobs:
             throw "The clip was not picked up where it was left"
           }
 
+      - name: What Windows was told about video files
+        run: |
+          # The runs above have started the application, which registers itself as it starts.
+          $here = (Get-Location).Path
+          $told = (Get-ItemProperty 'HKCU:\Software\Classes\BitSpringVideo.MKV\DefaultIcon').'(default)'
+          "Picture for MKV files: $told"
+          $picture = $told -replace '^"([^"]+)".*$', '$1'
+          if (-not (Test-Path $picture)) { throw "The picture named for MKV files is not there: $picture" }
+          if ($picture -notlike '*Document-MKV.ico') { throw "MKV files were given the wrong picture: $picture" }
+          $offered = (Get-Item 'HKCU:\Software\Classes\.mkv\OpenWithProgids').GetValueNames()
+          if ($offered -notcontains 'BitSpringVideo.MKV') { throw "The player is not offered for .mkv files" }
+          "Opened with: " + (Get-ItemProperty 'HKCU:\Software\Classes\BitSpringVideo.MKV\shell\open\command').'(default)'
+          "Default apps: " + (Get-ItemProperty 'HKCU:\Software\RegisteredApplications').'BitSpring Video'
+
+          # The pictures as Windows itself draws them, every size in the file, for the eye.
+          try {
+            Add-Type -AssemblyName System.Drawing
+            $sizes = 256, 64, 48, 32, 24, 16
+            $sheet = New-Object System.Drawing.Bitmap 1100, 300
+            $graphics = [System.Drawing.Graphics]::FromImage($sheet)
+            $graphics.Clear([System.Drawing.Color]::FromArgb(243, 243, 243))
+            $x = 20
+            foreach ($file in 'Document-MKV.ico', 'Document.ico') {
+              foreach ($size in $sizes) {
+                $icon = New-Object System.Drawing.Icon "$here\BitSpring-Video-windows\Assets\$file", $size, $size
+                $graphics.DrawImage($icon.ToBitmap(), $x, 280 - $size)
+                $x += $size + 16
+              }
+              $x += 40
+            }
+            $sheet.Save("$here\shots\7-file-pictures.png")
+          } catch { "The pictures could not be drawn here: $_" }
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -27,5 +27,7 @@
   </ItemGroup>
   <ItemGroup>
     <Content Include="Assets\icon.ico" CopyToOutputDirectory="PreserveNewest" />
+    <!-- The pictures on video files, one for each format: see FileTypes.cs. -->
+    <Content Include="Assets\Document*.ico" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>
