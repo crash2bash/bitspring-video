@@ -180,8 +180,18 @@ fn unescape(text: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// A path that leads to another machine: a share ("\\server\films", "//server/films"), or one
+/// of the names Windows reaches devices and shares by ("\\?\UNC\server\films"). Only asking
+/// whether such a file exists already makes a connection, and signs in to whoever answers.
+fn leads_elsewhere(path: &str) -> bool {
+    let mut letters = path.chars();
+    let mut separator = || matches!(letters.next(), Some('/' | '\\'));
+    separator() && separator()
+}
+
 /// The files a playlist names, as written: lines that are not comments. Names of files on
-/// this machine only: an address of anything else is passed over, never opened.
+/// this machine only: an address of anything else, or a path to another machine, is passed
+/// over, never opened and never looked for.
 pub fn parse_playlist(text: &str, folder: &Path) -> Vec<PathBuf> {
     text.trim_start_matches('\u{feff}')
         .lines()
@@ -192,6 +202,10 @@ pub fn parse_playlist(text: &str, folder: &Path) -> Vec<PathBuf> {
                 // "file:///films/a.mkv", "file://localhost/films/a.mkv", "file:///C:/films/a.mkv".
                 Some(rest) => {
                     let rest = rest.strip_prefix("localhost").unwrap_or(rest);
+                    // Anything else before the path is the name of another machine.
+                    if !rest.starts_with('/') {
+                        return None;
+                    }
                     let path = unescape(rest);
                     let drive = path.as_bytes().get(2) == Some(&b':');
                     if cfg!(windows) && drive {
@@ -203,6 +217,9 @@ pub fn parse_playlist(text: &str, folder: &Path) -> Vec<PathBuf> {
                 None if line.contains("://") => return None,
                 None => line.to_string(),
             };
+            if leads_elsewhere(&path) {
+                return None;
+            }
             let path = PathBuf::from(path);
             Some(if path.is_absolute() {
                 path
@@ -831,6 +848,16 @@ mod tests {
         assert_eq!(found[0], folder.join("one.mkv"));
         assert_eq!(found[1], folder.join("sub/two.mkv"));
         assert!(found[2].to_string_lossy().ends_with("four and a half.mkv"));
+    }
+
+    #[test]
+    fn a_playlist_cannot_send_the_player_to_another_machine() {
+        let folder = Path::new(if cfg!(windows) { "C:\\lists" } else { "/lists" });
+        let text = "\\\\server\\share\\a.mkv\n//server/share/b.mkv\n\\\\?\\UNC\\server\\share\\c.mkv\n\
+                    \\\\.\\pipe\\d\nfile://server/share/e.mkv\nfile:////server/share/f.mkv\n\
+                    file://localhost//server/share/g.mkv\nfile:///%5C%5Cserver/share/h.mkv\n/\\server/i.mkv\n\
+                    here.mkv\n";
+        assert_eq!(parse_playlist(text, folder), [folder.join("here.mkv")]);
     }
 
     #[test]

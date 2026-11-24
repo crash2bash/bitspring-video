@@ -53,7 +53,8 @@ Early. What works today, on the Mac:
 
 Only files on this machine are played. A video is never allowed to send the player to the network
 or to other files, whatever it claims to be. A playlist is read by the player itself, as a list
-of paths on this machine: an address of anything else in it is passed over.
+of paths on this machine: an address of anything else in it, or a path to another machine
+(`\\server\films`), is passed over without being looked for.
 
 On Windows the same player runs through Direct3D 11, inside a native application (WinUI 3)
 with the same controls, panels and settings. It builds, plays and draws its interface on the
