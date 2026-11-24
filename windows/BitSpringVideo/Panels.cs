@@ -427,4 +427,137 @@ public sealed partial class MainWindow
         };
         return box;
     }
+
+    // ---- The list of what plays next ---------------------------------------------------------
+
+    private const double QueueRowHeight = 34;
+    /// <summary>What the list's panel was last drawn from, and how far down it was scrolled.</summary>
+    private string? queueShown;
+    private double queueScroll;
+
+    /// <summary>
+    /// The folder's videos or the playlist: what the list is and what happens when this file
+    /// ends, the files themselves (press one to play it; the button at the end of a row moves
+    /// it or takes it out), and where a playlist is added to and saved.
+    /// </summary>
+    private UIElement QueuePanel(PlayerState s)
+    {
+        var panel = new StackPanel { Width = PanelWidth, Spacing = 12 };
+        if (s.Queue is not QueueInfo queue) return panel;
+        queueShown = queue.Shown + s.Settings.AutoNext;
+
+        panel.Children.Add(Text(QueueTitle(queue), 15, strong: true));
+        panel.Children.Add(Text(QueueExplanation(queue, s.Settings.AutoNext), 13, quiet: true));
+
+        var rows = new StackPanel();
+        for (var i = 0; i < queue.Items.Count; i++) rows.Children.Add(QueueRow(queue, i));
+        var visible = Math.Clamp(Root.ActualHeight - 400, 2.5 * QueueRowHeight, 8.5 * QueueRowHeight);
+        var scroller = new ScrollViewer
+        {
+            Content = rows,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            MaxHeight = visible,
+            Margin = new Thickness(-8, 0, -8, 0),
+        };
+        // Drawn again after a change, the list stays where it was; opened, it shows the file playing.
+        var wanted = queueScroll >= 0
+            ? queueScroll
+            : Math.Max(0, ((queue.Current ?? 0) + 0.5) * QueueRowHeight - visible / 2);
+        scroller.Loaded += (_, _) => scroller.ChangeView(null, wanted, null, true);
+        scroller.ViewChanged += (_, _) => queueScroll = scroller.VerticalOffset;
+        panel.Children.Add(scroller);
+
+        if (queue.Items.Count > 1)
+        {
+            panel.Children.Add(Text(L("When this one ends", "Когда это видео закончится"), quiet: true));
+            panel.Children.Add(Choices(
+                new[] { ("1", L("Play the next", "Играть следующее")), ("0", L("Stop", "Остановиться")) },
+                s.Settings.AutoNext ? "1" : "0",
+                value => player.Send("set autoNext " + value)));
+        }
+
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        var add = new Button { Content = L("Add…", "Добавить…"), FontSize = 12, Padding = new Thickness(12, 4, 12, 5) };
+        add.Click += async (_, _) =>
+        {
+            queueFlyout.Hide();
+            await ChooseFiles(adding: true);
+        };
+        var save = new Button
+        {
+            Content = queue.IsPlaylist && queue.Name.Length > 0
+                ? L("Save as…", "Сохранить как…")
+                : L("Save as a playlist…", "Сохранить как плейлист…"),
+            FontSize = 12,
+            Padding = new Thickness(12, 4, 12, 5),
+        };
+        save.Click += async (_, _) =>
+        {
+            queueFlyout.Hide();
+            await SavePlaylist(queue);
+        };
+        actions.Children.Add(add);
+        actions.Children.Add(save);
+        panel.Children.Add(actions);
+        return panel;
+    }
+
+    private Grid QueueRow(QueueInfo queue, int index)
+    {
+        var item = queue.Items[index];
+        var current = queue.Current == index;
+        var row = new Grid { Height = QueueRowHeight };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var words = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        words.Children.Add(new FontIcon
+        {
+            Glyph = "\uE768", FontSize = 10, Width = 12,
+            Opacity = current ? 1 : 0,
+            Foreground = Resource("PorcelainBrush"),
+        });
+        var label = Text(item.Label, 13, strong: current, quiet: !current);
+        label.TextWrapping = TextWrapping.NoWrap;
+        label.TextTrimming = TextTrimming.CharacterEllipsis;
+        label.MaxWidth = PanelWidth - 84;
+        words.Children.Add(label);
+        var play = new Button
+        {
+            Content = words,
+            Style = (Style)Root.Resources["OnGlass"],
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Left,
+            Padding = new Thickness(8, 4, 8, 5),
+        };
+        Tip(play, item.Name);
+        play.Click += (_, _) =>
+        {
+            if (!current) player.Send($"queue-play {index}");
+        };
+        row.Children.Add(play);
+
+        var menu = new MenuFlyout();
+        void Entry(string text, bool possible, string command)
+        {
+            var entry = new MenuFlyoutItem { Text = text, IsEnabled = possible };
+            entry.Click += (_, _) => player.Send(command);
+            menu.Items.Add(entry);
+        }
+        Entry(L("Move up", "Выше"), index > 0, $"queue-move {index} {index - 1}");
+        Entry(L("Move down", "Ниже"), index + 1 < queue.Items.Count, $"queue-move {index} {index + 1}");
+        Entry(L("Take out of the list", "Убрать из списка"), !current, $"queue-remove {index}");
+        var more = new Button
+        {
+            Content = new FontIcon { Glyph = "\uE712", FontSize = 12 },
+            Style = (Style)Root.Resources["OnGlass"],
+            Padding = new Thickness(8, 4, 8, 5),
+            Flyout = menu,
+            Opacity = 0.66,
+        };
+        Tip(more, L("Move or take out", "Переместить или убрать"));
+        Grid.SetColumn(more, 1);
+        row.Children.Add(more);
+        return row;
+    }
 }

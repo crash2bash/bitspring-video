@@ -16,6 +16,7 @@ use serde::Serialize;
 
 use crate::playback::{self, Command};
 use crate::prefs::Preferences;
+use crate::queue::QueueState;
 
 #[cfg(target_os = "macos")]
 unsafe extern "C" {
@@ -63,15 +64,40 @@ pub enum Request {
     Set(String, String),
     /// The controls appeared or went away.
     ControlsVisible(bool),
-    Open(String),
+    /// Play this: a video, a folder, a playlist, or several of them. A subtitle file is
+    /// shown with the video that is playing.
+    Open(Vec<String>),
+    /// Put these at the end of the list.
+    Add(Vec<String>),
+    /// The file after this one in the list, or the one before.
+    Next,
+    Previous,
+    /// Play the file at this place in the list.
+    Play(usize),
+    /// Take the file at this place out of the list.
+    Remove(usize),
+    /// Move a file of the list from one place to another.
+    Move(usize, usize),
+    /// Write the list to this playlist file.
+    Save(String),
     ToggleFullscreen,
     ExitFullscreen,
 }
 
 /// Read one command as the interface writes it: "toggle-pause", "seek-to 12.5", "open <path>".
+/// Where a command takes several paths, each is on a line of its own.
 pub fn parse(text: &str) -> Option<Request> {
     let (name, argument) = text.split_once(' ').unwrap_or((text, ""));
     let number = || argument.trim().parse::<f64>().ok();
+    let place = || argument.trim().parse::<usize>().ok();
+    let paths = || -> Option<Vec<String>> {
+        let paths: Vec<String> = argument
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(str::to_string)
+            .collect();
+        (!paths.is_empty()).then_some(paths)
+    };
     Some(match name {
         "toggle-pause" => Request::Player(Command::TogglePause),
         "toggle-mute" => Request::Player(Command::ToggleMute),
@@ -96,7 +122,17 @@ pub fn parse(text: &str) -> Option<Request> {
         }
         "toggle-fullscreen" => Request::ToggleFullscreen,
         "exit-fullscreen" => Request::ExitFullscreen,
-        "open" if !argument.is_empty() => Request::Open(argument.to_string()),
+        "open" => Request::Open(paths()?),
+        "queue-add" => Request::Add(paths()?),
+        "next" => Request::Next,
+        "previous" => Request::Previous,
+        "queue-play" => Request::Play(place()?),
+        "queue-remove" => Request::Remove(place()?),
+        "queue-move" => {
+            let (from, to) = argument.trim().split_once(' ')?;
+            Request::Move(from.parse().ok()?, to.trim().parse().ok()?)
+        }
+        "queue-save" if !argument.is_empty() => Request::Save(argument.to_string()),
         _ => return None,
     })
 }
@@ -206,6 +242,8 @@ pub struct State {
     subtitle_track: Option<i32>,
     display: DisplayState,
     settings: SettingsState,
+    /// What plays after what: the folder's videos, or a playlist. `None` when nothing is open.
+    queue: Option<QueueState>,
 }
 
 /// The preferences the settings panel shows.
@@ -224,6 +262,7 @@ struct SettingsState {
     subtitle_language: String,
     audio_language: String,
     audio_delay: f32,
+    auto_next: bool,
 }
 
 #[derive(Serialize)]
@@ -354,6 +393,7 @@ pub struct View<'a> {
     pub muted: bool,
     pub mode: HdrMode,
     pub prefs: &'a Preferences,
+    pub queue: Option<&'a QueueState>,
 }
 
 impl State {
@@ -368,6 +408,7 @@ impl State {
             muted,
             mode,
             prefs,
+            queue,
         } = view;
         let settings = SettingsState {
             display_peak: prefs.display_peak,
@@ -380,6 +421,7 @@ impl State {
             subtitle_language: prefs.subtitle_language.clone(),
             audio_language: prefs.audio_language.clone(),
             audio_delay: prefs.audio_delay_ms,
+            auto_next: prefs.auto_next,
         };
         let display_state = DisplayState {
             name: display.name.clone(),
@@ -423,6 +465,7 @@ impl State {
                 subtitle_track: None,
                 display: display_state,
                 settings,
+                queue: None,
             };
         };
 
@@ -511,6 +554,25 @@ impl State {
             subtitle_track: status.subtitle_track,
             display: display_state,
             settings,
+            queue: queue.cloned(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn commands_with_paths_take_one_to_a_line() {
+        let Some(Request::Open(paths)) = parse("open /films/a b.mkv\n/films/c.mkv") else {
+            panic!("not read as an open");
+        };
+        assert_eq!(paths, ["/films/a b.mkv", "/films/c.mkv"]);
+        assert!(parse("open ").is_none());
+        assert!(matches!(parse("queue-move 3 0"), Some(Request::Move(3, 0))));
+        assert!(matches!(parse("queue-play 2"), Some(Request::Play(2))));
+        assert!(parse("queue-play two").is_none());
+        assert!(matches!(parse("next"), Some(Request::Next)));
     }
 }

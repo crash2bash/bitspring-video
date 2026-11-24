@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 
 /// Files remembered at most; the ones left longest ago go first.
 const MOST_FILES: usize = 500;
+/// Folders and playlists remembered at most.
+const MOST_LISTS: usize = 200;
 /// A file stopped this close to its beginning starts from the beginning.
 const TOO_EARLY: f64 = 5.0;
 /// On coming back, playback starts this much before where it stopped.
@@ -63,10 +65,28 @@ fn near_the_end(position: f64, duration: f64) -> bool {
     duration > 0.0 && position >= duration - (duration * 0.05).clamp(10.0, 120.0)
 }
 
+/// Where a folder opened whole, or a playlist, was left.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+struct Left {
+    /// The file of it that was playing.
+    file: String,
+    updated: u64,
+}
+
 #[derive(Default, Serialize, Deserialize)]
 #[serde(default)]
 struct Stored {
     files: BTreeMap<String, Remembered>,
+    /// By the folder's path, or the playlist file's.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    lists: BTreeMap<String, Left>,
+}
+
+fn now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 /// What the player is told when it opens a file it has seen before.
@@ -125,7 +145,10 @@ impl Memory {
     /// The history that goes with a settings file: "history.json" beside "settings.json",
     /// "name.history.json" beside any other "name.json".
     pub fn beside(settings: &Path) -> Memory {
-        let stem = settings.file_stem().and_then(|s| s.to_str()).unwrap_or("settings");
+        let stem = settings
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("settings");
         let name = if stem == "settings" {
             "history.json".to_string()
         } else {
@@ -216,6 +239,55 @@ impl Memory {
         }
     }
 
+    /// The file a folder or a playlist was left on, if it has been played before.
+    pub fn list_left_at(&self, list: &Path) -> Option<PathBuf> {
+        let left = self.stored.lists.get(list.to_string_lossy().as_ref())?;
+        Some(PathBuf::from(&left.file))
+    }
+
+    /// A file of a folder or a playlist is being played: the list is picked up there next time.
+    pub fn list_at(&mut self, list: &Path, file: &Path) {
+        let file = file.to_string_lossy().into_owned();
+        let key = list.to_string_lossy().into_owned();
+        if self
+            .stored
+            .lists
+            .get(&key)
+            .is_some_and(|left| left.file == file)
+        {
+            return;
+        }
+        self.stored.lists.insert(
+            key,
+            Left {
+                file,
+                updated: now(),
+            },
+        );
+        while self.stored.lists.len() > MOST_LISTS {
+            let oldest = self
+                .stored
+                .lists
+                .iter()
+                .min_by_key(|(_, left)| left.updated)
+                .map(|(key, _)| key.clone());
+            match oldest {
+                Some(key) => self.stored.lists.remove(&key),
+                None => break,
+            };
+        }
+        self.report(self.save());
+    }
+
+    fn report(&self, saved: std::io::Result<()>) {
+        if let Err(e) = saved {
+            eprintln!(
+                "[warn] cannot write the history to {}: {e}",
+                self.path.display()
+            );
+        }
+    }
+
     /// The file is being closed, or the player is.
     pub fn closed(&mut self) {
         if self.current.as_ref().is_some_and(|c| c.unsaved) {
@@ -228,9 +300,7 @@ impl Memory {
         let Some(current) = &mut self.current else {
             return;
         };
-        current.entry.updated = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs());
+        current.entry.updated = now();
         current.unsaved = false;
         current.written = Instant::now();
         self.stored
@@ -248,12 +318,7 @@ impl Memory {
                 None => break,
             };
         }
-        if let Err(e) = self.save() {
-            eprintln!(
-                "[warn] cannot write the history to {}: {e}",
-                self.path.display()
-            );
-        }
+        self.report(self.save());
     }
 
     /// Written whole to a file beside the real one and moved over it, so that a player killed
@@ -293,7 +358,8 @@ mod tests {
     use super::*;
 
     fn scratch(name: &str) -> PathBuf {
-        let folder = std::env::temp_dir().join(format!("bsv-history-{}-{name}", std::process::id()));
+        let folder =
+            std::env::temp_dir().join(format!("bsv-history-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&folder);
         std::fs::create_dir_all(&folder).unwrap();
         folder
@@ -376,6 +442,20 @@ mod tests {
                 subtitles: Some(Some(4)),
             }
         );
+    }
+
+    #[test]
+    fn a_playlist_is_picked_up_on_the_file_it_was_left_on() {
+        let folder = scratch("lists");
+        let settings = folder.join("settings.json");
+        let list = folder.join("evening.m3u8");
+        let mut memory = Memory::beside(&settings);
+        assert_eq!(memory.list_left_at(&list), None);
+        memory.list_at(&list, &folder.join("1.mkv"));
+        memory.list_at(&list, &folder.join("2.mkv"));
+        let memory = Memory::beside(&settings);
+        assert_eq!(memory.list_left_at(&list), Some(folder.join("2.mkv")));
+        assert_eq!(memory.list_left_at(&folder), None);
     }
 
     #[test]

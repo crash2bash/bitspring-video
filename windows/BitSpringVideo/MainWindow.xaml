@@ -4,9 +4,10 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
     <!-- The picture fills the window; the controls are pieces of acrylic floating over it:
-           top left      the file's name; opens another file
+           top left      the file's name; opens another file. Beside it, where the file
+                         stands in its folder or playlist; opens the list
            top right     settings, and the signal lens with its panel
-           bottom        transport: play, time, seek, volume, tracks, full screen
+           bottom        transport: previous, play, next, time, seek, volume, tracks, full screen
          Panels and menus are built in MainWindow.xaml.cs, where their content comes from. -->
     <Grid
         x:Name="Root"
@@ -42,6 +43,13 @@
                 FontWeight="SemiBold"
                 HorizontalAlignment="Center"
                 Foreground="{StaticResource PorcelainBrush}" />
+            <TextBlock
+                x:Name="EmptyHint"
+                FontSize="14"
+                TextWrapping="Wrap"
+                TextAlignment="Center"
+                HorizontalAlignment="Center"
+                Foreground="{StaticResource QuietBrush}" />
             <TextBlock
                 x:Name="EmptyDisplay"
                 FontSize="14"
@@ -104,21 +112,39 @@
         </Border>
 
         <Grid x:Name="Chrome" Visibility="Collapsed">
-            <Border
-                x:Name="TitlePill"
+            <!-- What is playing, and where it stands among the others: "2 / 10" opens the list. -->
+            <StackPanel
+                Orientation="Horizontal"
+                Spacing="10"
                 HorizontalAlignment="Left"
                 VerticalAlignment="Top"
-                Margin="20,40,0,0"
-                Height="36"
-                CornerRadius="18"
-                Background="{StaticResource GlassBrush}">
-                <Button x:Name="TitleButton" Style="{StaticResource OnGlass}" Click="OnOpenClick" Padding="14,6">
-                    <StackPanel Orientation="Horizontal" Spacing="8">
-                        <FontIcon Glyph="&#xE8B7;" FontSize="14" />
-                        <TextBlock x:Name="TitleText" FontSize="13" MaxWidth="380" TextTrimming="CharacterEllipsis" />
-                    </StackPanel>
-                </Button>
-            </Border>
+                Margin="20,40,0,0">
+                <Border
+                    x:Name="TitlePill"
+                    Height="36"
+                    CornerRadius="18"
+                    Background="{StaticResource GlassBrush}">
+                    <Button x:Name="TitleButton" Style="{StaticResource OnGlass}" Click="OnOpenClick" Padding="14,6">
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <FontIcon Glyph="&#xE8B7;" FontSize="14" />
+                            <TextBlock x:Name="TitleText" FontSize="13" MaxWidth="380" TextTrimming="CharacterEllipsis" />
+                        </StackPanel>
+                    </Button>
+                </Border>
+                <Border
+                    x:Name="QueuePill"
+                    Height="36"
+                    MinWidth="36"
+                    CornerRadius="18"
+                    Background="{StaticResource GlassBrush}">
+                    <Button x:Name="QueueButton" Style="{StaticResource OnGlass}" HorizontalAlignment="Center" Padding="12,6">
+                        <Grid>
+                            <FontIcon x:Name="QueueGlyph" Glyph="&#xE8FD;" FontSize="14" />
+                            <TextBlock x:Name="QueueText" FontSize="14" Visibility="Collapsed" />
+                        </Grid>
+                    </Button>
+                </Border>
+            </StackPanel>
 
             <Border
                 x:Name="SignalPill"
@@ -151,6 +177,8 @@
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="Auto" />
@@ -160,10 +188,19 @@
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
 
+                    <!-- To the file before this one in the folder or the playlist, and the one after:
+                         there when there is more than one. -->
+                    <Button x:Name="PreviousButton" Grid.Column="0" Style="{StaticResource OnGlass}" Click="OnPreviousClick" Padding="6" Visibility="Collapsed">
+                        <FontIcon Glyph="&#xE892;" FontSize="14" />
+                    </Button>
+                    <Button x:Name="NextButton" Grid.Column="2" Style="{StaticResource OnGlass}" Click="OnNextClick" Padding="6" Visibility="Collapsed">
+                        <FontIcon Glyph="&#xE893;" FontSize="14" />
+                    </Button>
+
                     <!-- The one filled shape in the interface: the key takes the signal's colour. -->
                     <Button
                         x:Name="PlayButton"
-                        Grid.Column="0"
+                        Grid.Column="1"
                         Click="OnPlayClick"
                         Width="38"
                         Height="38"
@@ -176,7 +213,7 @@
                     </Button>
                     <TextBlock
                         x:Name="Elapsed"
-                        Grid.Column="1"
+                        Grid.Column="3"
                         MinWidth="44"
                         FontSize="15"
                         TextAlignment="Right"
@@ -185,7 +222,7 @@
                         Foreground="{StaticResource PorcelainBrush}" />
                     <Slider
                         x:Name="Seek"
-                        Grid.Column="2"
+                        Grid.Column="4"
                         Minimum="0"
                         Maximum="1"
                         StepFrequency="0.001"
@@ -194,15 +231,15 @@
                         Margin="4,0,4,0"
                         IsTabStop="False"
                         ValueChanged="OnSeekChanged" />
-                    <Button x:Name="DurationButton" Grid.Column="3" Style="{StaticResource OnGlass}" Click="OnDurationClick" Padding="4,6">
+                    <Button x:Name="DurationButton" Grid.Column="5" Style="{StaticResource OnGlass}" Click="OnDurationClick" Padding="4,6">
                         <TextBlock x:Name="DurationText" MinWidth="44" FontSize="15" Foreground="{StaticResource QuietBrush}" />
                     </Button>
-                    <Button x:Name="MuteButton" Grid.Column="4" Style="{StaticResource OnGlass}" Click="OnMuteClick">
+                    <Button x:Name="MuteButton" Grid.Column="6" Style="{StaticResource OnGlass}" Click="OnMuteClick">
                         <FontIcon x:Name="MuteGlyph" Glyph="&#xE767;" FontSize="15" />
                     </Button>
                     <Slider
                         x:Name="Volume"
-                        Grid.Column="5"
+                        Grid.Column="7"
                         Width="72"
                         Minimum="0"
                         Maximum="1"
@@ -211,13 +248,13 @@
                         IsTabStop="False"
                         IsThumbToolTipEnabled="False"
                         ValueChanged="OnVolumeChanged" />
-                    <Button x:Name="SubtitlesButton" Grid.Column="6" Style="{StaticResource OnGlass}">
+                    <Button x:Name="SubtitlesButton" Grid.Column="8" Style="{StaticResource OnGlass}">
                         <FontIcon x:Name="SubtitlesGlyph" Glyph="&#xE7F0;" FontSize="15" />
                     </Button>
-                    <Button x:Name="SoundButton" Grid.Column="7" Style="{StaticResource OnGlass}">
+                    <Button x:Name="SoundButton" Grid.Column="9" Style="{StaticResource OnGlass}">
                         <FontIcon Glyph="&#xE8D6;" FontSize="15" />
                     </Button>
-                    <Button x:Name="FullscreenButton" Grid.Column="8" Style="{StaticResource OnGlass}" Click="OnFullscreenClick">
+                    <Button x:Name="FullscreenButton" Grid.Column="10" Style="{StaticResource OnGlass}" Click="OnFullscreenClick">
                         <FontIcon x:Name="FullscreenGlyph" Glyph="&#xE740;" FontSize="14" />
                     </Button>
                 </Grid>

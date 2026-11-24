@@ -67,11 +67,13 @@ public partial class App : Application
 }
 
 /// <summary>How the program was started.</summary>
-public sealed record Launch(string? File, string? Settings, string? Log, string? Show, bool Pin, bool Sound)
+public sealed record Launch(List<string> Files, string? Settings, string? Log, string? Show, bool Pin, bool Sound)
 {
     public static Launch Parse(string[] args)
     {
-        string? file = null, settings = null, log = null, show = null;
+        // What to play: a video, a folder, a playlist, or several of them.
+        var files = new List<string>();
+        string? settings = null, log = null, show = null;
         var pin = false;
         var sound = true;
         for (var i = 0; i < args.Length; i++)
@@ -80,15 +82,15 @@ public sealed record Launch(string? File, string? Settings, string? Log, string?
             {
                 case "--settings" when i + 1 < args.Length: settings = args[++i]; break;
                 case "--log" when i + 1 < args.Length: log = args[++i]; break;
-                // For screenshots: open a panel ("signal", "settings"), keep the controls up.
+                // For screenshots: open a panel ("signal", "settings", "queue"), keep the controls up.
                 case "--show" when i + 1 < args.Length: show = args[++i]; break;
                 case "--pin": pin = true; break;
                 case "--no-sound": sound = false; break;
                 default:
-                    if (!args[i].StartsWith("--")) file = args[i];
+                    if (!args[i].StartsWith("--")) files.Add(args[i]);
                     break;
             }
         }
-        return new Launch(file, settings, log, show, pin, sound);
+        return new Launch(files, settings, log, show, pin, sound);
     }
 }

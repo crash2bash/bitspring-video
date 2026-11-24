@@ -5,7 +5,7 @@ using Microsoft.Win32;
 namespace BitSpringVideo;
 
 /// <summary>
-/// Tells Windows which files this player opens, so that it is offered under "Open with" and in
+/// Tells Windows which files this player opens (videos, and playlists of them), so that it is offered under "Open with" and in
 /// Settings, Default apps, and so that a video file it has been chosen for wears its picture.
 ///
 /// The program has no installer to do this, so it does it itself each time it starts, for the
@@ -33,6 +33,8 @@ internal static class FileTypes
         ("TS", new[] { ".ts" }),
         ("M2TS", new[] { ".m2ts", ".mts" }),
         ("AVI", new[] { ".avi" }),
+        // Playlists: lists of videos, which the player also makes.
+        ("M3U", new[] { ".m3u8", ".m3u" }),
         ("", new[] { ".mpg", ".mpeg", ".m2v", ".vob", ".wmv", ".flv", ".ogv", ".3gp" }),
     };
 
@@ -65,7 +67,8 @@ internal static class FileTypes
                 var kind = format == "" ? "BitSpringVideo.Video" : $"BitSpringVideo.{format}";
                 var picture = Path.Combine(folder, "Assets", format == "" ? "Document.ico" : $"Document-{format}.ico");
                 if (!File.Exists(picture)) picture = program;
-                changed |= Set(classes, kind, null, format == "" ? "Video" : $"{format} video");
+                var called = format switch { "" => "Video", "M3U" => "Playlist", _ => $"{format} video" };
+                changed |= Set(classes, kind, null, called);
                 changed |= Set(classes, $@"{kind}\DefaultIcon", null, $"\"{picture}\",0");
                 changed |= Set(classes, $@"{kind}\shell\open\command", null, open);
 

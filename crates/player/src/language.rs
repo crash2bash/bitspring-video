@@ -43,6 +43,39 @@ fn canonical(code: &str) -> String {
         .unwrap_or(base)
 }
 
+/// The language a word in a file or folder name stands for: a three-letter code ("RUS Subs"),
+/// or the language's name in English. Two-letter codes are not taken here: among ordinary
+/// words too many of them are words ("no", "it", "de").
+pub fn named(word: &str) -> Option<&'static str> {
+    const NAMES: &[(&str, &str)] = &[
+        ("english", "eng"),
+        ("russian", "rus"),
+        ("ukrainian", "ukr"),
+        ("georgian", "kat"),
+        ("german", "deu"),
+        ("french", "fra"),
+        ("spanish", "spa"),
+        ("italian", "ita"),
+        ("portuguese", "por"),
+        ("polish", "pol"),
+        ("turkish", "tur"),
+        ("japanese", "jpn"),
+        ("korean", "kor"),
+        ("chinese", "zho"),
+    ];
+    let word = word.to_lowercase();
+    CODES
+        .iter()
+        .find(|(_, three, old)| word == *three || word == *old)
+        .map(|(_, three, _)| *three)
+        .or_else(|| {
+            NAMES
+                .iter()
+                .find(|(name, _)| word == *name)
+                .map(|(_, code)| *code)
+        })
+}
+
 /// Whether two codes name the same language. An empty or undetermined code matches nothing.
 pub fn same(a: &str, b: &str) -> bool {
     let (a, b) = (canonical(a), canonical(b));
@@ -74,6 +107,16 @@ mod tests {
         assert!(!same("", ""));
         assert!(!same("und", "und"));
         assert!(!same("eng", ""));
+    }
+
+    #[test]
+    fn words_in_names_are_read_as_languages() {
+        use super::named;
+        assert_eq!(named("RUS"), Some("rus"));
+        assert_eq!(named("ger"), Some("deu"));
+        assert_eq!(named("Japanese"), Some("jpn"));
+        assert_eq!(named("no"), None);
+        assert_eq!(named("subs"), None);
     }
 
     #[test]

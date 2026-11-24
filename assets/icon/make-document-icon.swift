@@ -9,7 +9,7 @@
 // built where there is no Swift, so its pictures are kept in windows/BitSpringVideo/Assets;
 // after changing this file, draw them again:
 //
-//   for f in MKV WEBM MP4 M4V MOV TS M2TS AVI; do
+//   for f in MKV WEBM MP4 M4V MOV TS M2TS AVI M3U; do
 //     swift assets/icon/make-document-icon.swift $f windows/BitSpringVideo/Assets/Document-$f.ico
 //   done
 //   swift assets/icon/make-document-icon.swift "" windows/BitSpringVideo/Assets/Document.ico

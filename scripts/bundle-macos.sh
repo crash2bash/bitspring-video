@@ -37,7 +37,8 @@ rm -rf "$(dirname "$ICONSET")"
 # name for any other video. Each line: the name, then the types that are files of that format
 # (other players give Matroska and WebM type names of their own, and the one installed first
 # wins, so theirs are listed too).
-FORMATS="MKV org.matroska.mkv io.iina.mkv io.mpv.mkv
+FORMATS="M3U public.m3u-playlist
+MKV org.matroska.mkv io.iina.mkv io.mpv.mkv
 WEBM org.webmproject.webm io.iina.webm io.mpv.webm
 MP4 public.mpeg-4
 M4V com.apple.m4v-video

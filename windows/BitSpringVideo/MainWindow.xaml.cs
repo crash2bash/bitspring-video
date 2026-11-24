@@ -52,6 +52,8 @@ public sealed partial class MainWindow : Window
 
     private readonly Flyout signalFlyout = new() { Placement = FlyoutPlacementMode.BottomEdgeAlignedRight };
     private readonly Flyout settingsFlyout = new() { Placement = FlyoutPlacementMode.BottomEdgeAlignedRight };
+    private readonly Flyout queueFlyout = new() { Placement = FlyoutPlacementMode.BottomEdgeAlignedLeft };
+    private bool queueOpen;
 
     public MainWindow(Launch launch)
     {
@@ -79,9 +81,15 @@ public sealed partial class MainWindow : Window
         player = new Player(launch.Settings, launch.Log, launch.Sound);
 
         EmptyTitle.Text = L("Drop a video here", "Перетащите сюда видео");
-        OpenButton.Content = L("Open a file…", "Открыть файл…");
+        EmptyHint.Text = L(
+            "Or a folder of them, or a playlist. Subtitles can be dropped on a video that is playing.",
+            "Или папку с ними, или плейлист. Субтитры можно бросить на видео, которое уже играет.");
+        OpenButton.Content = L("Open…", "Открыть…");
         RestartButton.Content = L("From the start", "С начала");
-        Tip(TitleButton, L("Open another file", "Открыть другой файл"));
+        Tip(TitleButton, L("Open another video, several, or a playlist", "Открыть другое видео, несколько или плейлист"));
+        Tip(QueueButton, L("What plays next", "Что играет дальше"));
+        Tip(PreviousButton, L("The one before (P)", "Предыдущее (P)"));
+        Tip(NextButton, L("The next one (N)", "Следующее (N)"));
         Tip(SignalButton, L("How the picture is being shown", "Как показывается картинка"));
         Tip(SettingsButton, L("Settings", "Настройки"));
         Tip(DurationButton, L("Switch between length and time left", "Длительность или оставшееся время"));
@@ -104,6 +112,14 @@ public sealed partial class MainWindow : Window
 
         SignalButton.Flyout = signalFlyout;
         SettingsButton.Flyout = settingsFlyout;
+        QueueButton.Flyout = queueFlyout;
+        queueFlyout.Opening += (_, _) =>
+        {
+            queueScroll = -1;
+            queueFlyout.Content = QueuePanel(state);
+        };
+        queueFlyout.Opened += (_, _) => queueOpen = true;
+        queueFlyout.Closed += (_, _) => queueOpen = false;
         signalFlyout.Opening += (_, _) => signalFlyout.Content = SignalPanel(state);
         settingsFlyout.Opening += (_, _) => settingsFlyout.Content = SettingsPanel(state);
         var subtitlesMenu = new MenuFlyout();
@@ -112,14 +128,14 @@ public sealed partial class MainWindow : Window
         var soundMenu = new MenuFlyout();
         soundMenu.Opening += (_, _) => FillSoundMenu(soundMenu);
         SoundButton.Flyout = soundMenu;
-        foreach (var flyout in new FlyoutBase[] { signalFlyout, settingsFlyout, subtitlesMenu, soundMenu })
+        foreach (var flyout in new FlyoutBase[] { signalFlyout, settingsFlyout, queueFlyout, subtitlesMenu, soundMenu })
         {
             flyout.Opened += (_, _) => flyoutsOpen++;
             flyout.Closed += (_, _) => flyoutsOpen = Math.Max(0, flyoutsOpen - 1);
         }
 
         // While the pointer rests on a control, the controls stay.
-        foreach (var piece in new FrameworkElement[] { TitlePill, SignalPill, SettingsPill, Transport })
+        foreach (var piece in new FrameworkElement[] { TitlePill, QueuePill, SignalPill, SettingsPill, Transport })
         {
             piece.PointerEntered += (_, _) => hovering++;
             piece.PointerExited += (_, _) => hovering = Math.Max(0, hovering - 1);
@@ -141,7 +157,7 @@ public sealed partial class MainWindow : Window
         };
 
         Apply(state);
-        if (launch.File != null) player.Send("open " + launch.File);
+        if (launch.Files.Count > 0) player.Send("open " + string.Join("\n", launch.Files));
         showWhenReady = launch.Show;
     }
 
@@ -151,7 +167,11 @@ public sealed partial class MainWindow : Window
         if ((DateTime.UtcNow - started).TotalSeconds < 2) return;
         switch (showWhenReady)
         {
-            case "settings" when launch.File == null || state.Signal != null:
+            case "queue" when state.Queue != null && state.Signal != null:
+                queueFlyout.ShowAt(QueueButton);
+                showWhenReady = null;
+                break;
+            case "settings" when launch.Files.Count == 0 || state.Signal != null:
                 settingsFlyout.ShowAt(SettingsButton);
                 showWhenReady = null;
                 break;
@@ -257,6 +277,19 @@ public sealed partial class MainWindow : Window
         if (!open) return;
 
         TitleText.Text = s.File;
+        // Where the file stands among the others, when there are others.
+        var queue = s.Queue;
+        var several = queue != null && queue.Items.Count > 1;
+        QueueText.Text = several && queue!.Current is int at ? $"{at + 1} / {queue.Items.Count}" : "";
+        QueueText.Visibility = QueueText.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+        QueueGlyph.Visibility = QueueText.Text.Length > 0 ? Visibility.Collapsed : Visibility.Visible;
+        PreviousButton.Visibility = several ? Visibility.Visible : Visibility.Collapsed;
+        NextButton.Visibility = several ? Visibility.Visible : Visibility.Collapsed;
+        PreviousButton.IsEnabled = queue?.HasPrevious == true;
+        NextButton.IsEnabled = queue?.HasNext == true;
+        // The open list follows what was done to it.
+        if (queueOpen && queue != null && queue.Shown + s.Settings.AutoNext != queueShown)
+            queueFlyout.Content = QueuePanel(s);
         var treatment = s.Treatment;
         live.Color = treatment is Treatment t ? (t.Untouched ? Brass : Violet) : Porcelain;
 
@@ -342,6 +375,10 @@ public sealed partial class MainWindow : Window
 
     private void OnMuteClick(object sender, RoutedEventArgs e) => player.Send("toggle-mute");
 
+    private void OnPreviousClick(object sender, RoutedEventArgs e) => player.Send("previous");
+
+    private void OnNextClick(object sender, RoutedEventArgs e) => player.Send("next");
+
     private void OnFullscreenClick(object sender, RoutedEventArgs e) => ToggleFullscreen();
 
     private void OnRestartClick(object sender, RoutedEventArgs e) => player.Send("seek-to 0");
@@ -393,15 +430,34 @@ public sealed partial class MainWindow : Window
         if (!updating) player.Send("volume " + Number(e.NewValue));
     }
 
-    private async void OnOpenClick(object sender, RoutedEventArgs e) => await ChooseFile();
+    private async void OnOpenClick(object sender, RoutedEventArgs e) => await ChooseFiles(adding: false);
 
-    private async Task ChooseFile()
+    /// <summary>
+    /// Choose what to play, or what to put at the end of the list: videos, a playlist, or a
+    /// subtitle file for the video that is playing. (A folder is opened by dropping it.)
+    /// </summary>
+    private async Task ChooseFiles(bool adding)
     {
         var picker = new FileOpenPicker { SuggestedStartLocation = PickerLocationId.VideosLibrary };
         picker.FileTypeFilter.Add("*");
         WinRT.Interop.InitializeWithWindow.Initialize(picker, WinRT.Interop.WindowNative.GetWindowHandle(this));
-        var file = await picker.PickSingleFileAsync();
-        if (file != null) player.Send("open " + file.Path);
+        var files = await picker.PickMultipleFilesAsync();
+        if (files.Count > 0)
+            player.Send((adding ? "queue-add " : "open ") + string.Join("\n", files.Select(f => f.Path)));
+    }
+
+    /// <summary>Write the list to a playlist file: plain text, one path to a line.</summary>
+    private async Task SavePlaylist(QueueInfo queue)
+    {
+        var picker = new FileSavePicker
+        {
+            SuggestedStartLocation = PickerLocationId.VideosLibrary,
+            SuggestedFileName = queue.Name.Length > 0 ? queue.Name : L("Playlist", "Плейлист"),
+        };
+        picker.FileTypeChoices.Add(L("Playlist", "Плейлист"), new List<string> { ".m3u8" });
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, WinRT.Interop.WindowNative.GetWindowHandle(this));
+        var file = await picker.PickSaveFileAsync();
+        if (file != null) player.Send("queue-save " + file.Path);
     }
 
     private void OnDragOver(object sender, DragEventArgs e)
@@ -414,7 +470,7 @@ public sealed partial class MainWindow : Window
     {
         if (!e.DataView.Contains(StandardDataFormats.StorageItems)) return;
         var items = await e.DataView.GetStorageItemsAsync();
-        if (items.Count > 0) player.Send("open " + items[0].Path);
+        if (items.Count > 0) player.Send("open " + string.Join("\n", items.Select(i => i.Path)));
     }
 
     private void AddKeys()
@@ -441,11 +497,14 @@ public sealed partial class MainWindow : Window
         Key(VirtualKey.M, () => player.Send("toggle-mute"));
         Key(VirtualKey.S, NextSubtitles);
         Key(VirtualKey.A, NextSound);
+        Key(VirtualKey.N, () => player.Send("next"));
+        Key(VirtualKey.P, () => player.Send("previous"));
+        Key(VirtualKey.L, () => { if (state.Queue != null) queueFlyout.ShowAt(QueueButton); });
         Key(VirtualKey.F, ToggleFullscreen);
         Key(VirtualKey.Enter, ToggleFullscreen);
         Key(VirtualKey.Escape, () => { if (IsFullscreen) ToggleFullscreen(); });
         Key(VirtualKey.I, () => { if (SignalPill.Visibility == Visibility.Visible) signalFlyout.ShowAt(SignalButton); });
-        Key(VirtualKey.O, () => _ = ChooseFile(), VirtualKeyModifiers.Control);
+        Key(VirtualKey.O, () => _ = ChooseFiles(adding: false), VirtualKeyModifiers.Control);
         Key((VirtualKey)188 /* comma */, () => settingsFlyout.ShowAt(SettingsButton), VirtualKeyModifiers.Control);
     }
 

@@ -31,6 +31,9 @@ pub struct Preferences {
     pub audio_delay_ms: f32,
     /// 0.0 to 1.0.
     pub volume: f32,
+    /// When an episode ends, the next one in its folder starts by itself, and a playlist
+    /// goes on to its next file.
+    pub auto_next: bool,
 }
 
 impl Default for Preferences {
@@ -47,6 +50,7 @@ impl Default for Preferences {
             audio_language: String::new(),
             audio_delay_ms: 0.0,
             volume: 1.0,
+            auto_next: true,
         }
     }
 }
@@ -132,6 +136,7 @@ impl Preferences {
             "audioLanguage" => self.audio_language = value.trim().to_string(),
             "audioDelay" => self.audio_delay_ms = number.unwrap_or(0.0),
             "volume" => self.volume = number.unwrap_or(1.0),
+            "autoNext" => self.auto_next = matches!(value.trim(), "1" | "true"),
             _ => return false,
         }
         self.tidy();

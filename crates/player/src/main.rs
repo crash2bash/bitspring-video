@@ -17,7 +17,7 @@ const USAGE: &str = "\
 BitSpring Video
 
 Usage:
-  bitspring-video [options] [file]
+  bitspring-video [options] [file | folder | playlist] ...
   bitspring-video --displays
   bitspring-video --info <file>
 
@@ -32,9 +32,12 @@ Options:
   --render <opts>    extra libplacebo options, key=value,key=value
   --verbose          show renderer and decoder messages, and the clock once a second
   --script <steps>   timed commands for testing: 2:pause,4:pause,5:seek+10,6:volume-20,9:quit
-                     (also: mute, hdr, fullscreen, panel, settings, pin, open <file>,
-                     audio <n>, subs <n>, subs off, where <n> is a track number from
-                     --info, and set <name> <value> for a setting as named in its file)
+                     (also: mute, hdr, fullscreen, panel, settings, queue, pin,
+                     open <file>, add <file>, with | between several files, next,
+                     previous, play <n> for the n-th file of the list counting from 0,
+                     save <playlist>, audio <n>, subs <n>, subs off, where <n> is a
+                     track number from --info, and set <name> <value> for a setting as
+                     named in its file)
 
 Keys:
   Space              pause
@@ -43,6 +46,8 @@ Keys:
   I                  the signal panel
   S                  next subtitle track, then off
   A                  next sound track
+  N / P              the next file of the folder or the playlist / the one before
+  L                  the list of what plays next
   Cmd+O              open a file
   Cmd+,              settings
   Up / Down          volume
@@ -51,7 +56,7 @@ Keys:
 ";
 
 struct Args {
-    path: Option<String>,
+    paths: Vec<String>,
     displays: bool,
     info: bool,
     hardware: Option<bool>,
@@ -68,7 +73,7 @@ struct Args {
 
 fn parse_args() -> Result<Args, String> {
     let mut args = Args {
-        path: None,
+        paths: Vec::new(),
         displays: false,
         info: false,
         hardware: None,
@@ -127,7 +132,7 @@ fn parse_args() -> Result<Args, String> {
             }
             "-h" | "--help" => return Err(String::new()),
             flag if flag.starts_with("--") => return Err(format!("unknown option {flag}")),
-            path => args.path = Some(path.to_string()),
+            path => args.paths.push(path.to_string()),
         }
     }
     Ok(args)
@@ -197,7 +202,7 @@ fn run() -> Result<(), String> {
         return print_displays();
     }
     if args.info {
-        let Some(path) = args.path.clone() else {
+        let Some(path) = args.paths.first().cloned() else {
             return Err("--info needs a file".into());
         };
         return print_info(&path, &args);
@@ -209,7 +214,7 @@ fn run() -> Result<(), String> {
         launch::parse_script(&args.script)?
     };
     let settings = launch::Settings {
-        path: args.path,
+        paths: args.paths,
         preferences: args
             .settings
             .map(std::path::PathBuf::from)

@@ -78,6 +78,15 @@ jobs:
             -x265-params "log-level=error:hdr-opt=1:repeat-headers=1:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc:master-display=G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,50):max-cll=1000,400" \
             -c:a aac -c:s srt -metadata:s:a:0 language=eng -metadata:s:s:0 language=eng clip.mkv
           rm clip.srt
+          # Two short episodes of a series, the first with a subtitle file in a folder below.
+          mkdir -p series/Subs
+          for n in 01 02; do
+            ffmpeg -hide_banner -loglevel error -y \
+              -f lavfi -i "testsrc2=size=640x360:rate=24:duration=6" \
+              -f lavfi -i "sine=frequency=330:sample_rate=48000:duration=6" \
+              -c:v libx264 -preset ultrafast -pix_fmt yuv420p -c:a aac -shortest series/Show-$n.mkv
+          done
+          printf '1\n00:00:00,200 --> 00:00:06,000\nFrom the folder below.\n\n' > series/Subs/Show-01.srt
 
       - name: Start the bare player and show a frame
         run: |
@@ -233,6 +242,9 @@ jobs:
           Remove-Item "$here\shots\history.json" -ErrorAction SilentlyContinue
           Photograph "5-first-visit" 18 @($clip) $true
           Photograph "6-picked-up" 11 @($clip) $true
+          # The first of two six-second episodes: the second should start by itself, and the
+          # list (opened from "1 / 2") should follow it there.
+          Photograph "8-series" 40 @("$here\clip\series\Show-01.mkv", "--show", "queue")
 
           # A "Signal" line is written once a frame has gone through the renderer to the panel.
           if (-not (Select-String -Path "$here\shots\2-playing.log" -Pattern '^Signal:' -Quiet)) {
@@ -240,6 +252,9 @@ jobs:
           }
           if (-not (Select-String -Path "$here\shots\6-picked-up.log" -Pattern '^Resume:' -Quiet)) {
             throw "The clip was not picked up where it was left"
+          }
+          if (-not (Select-String -Path "$here\shots\8-series.log" -Pattern '^File:.*Show-02\.mkv' -Quiet)) {
+            throw "The second episode did not start after the first"
           }
 
       - name: What Windows was told about video files

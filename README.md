@@ -27,9 +27,12 @@ Early. What works today, on the Mac:
 - Decoding on the platform's video decoder; where it refuses a stretch of a file that software
   reads without complaint, software takes over at the same picture and the film goes on
 - Subtitles: text (SRT, ASS/SSA with its own styles and the fonts inside the file, WebVTT, MP4
-  text) drawn by libass at the display's resolution; picture subtitles (Blu-ray PGS, DVD); and
-  subtitle files next to the video (`film.srt`, `film.ru.ass`). In HDR, subtitle white sits at
-  SDR white, not at the display's peak
+  text) drawn by libass at the display's resolution; picture subtitles (Blu-ray PGS, DVD). In
+  HDR, subtitle white sits at SDR white, not at the display's peak
+- Subtitle files outside the video: those whose name begins with the video's (`film.srt`,
+  `film.ru.ass`, `film [Group].ass`), beside it or up to three folders below it (`Subs/`,
+  `RUS Subs/[Group]/`), with the fonts from a `Fonts` folder near them; and any subtitle
+  file dropped on a video that is playing
 - Choosing the sound track and the subtitle track
 - Settings, each taking effect on the picture as it is changed: the display's peak brightness
   (its own figure, or yours), rendering quality, hardware decoding; subtitle size, subtitle
@@ -38,11 +41,19 @@ Early. What works today, on the Mac:
   plays, and are let go on pause
 - A film is picked up where it was left, with the sound and subtitle tracks chosen for it; a
   note offers its beginning instead. A film watched to its credits starts from the beginning
+- Series: opening one video gathers the other videos of its folder around it, in the order a
+  person reads their names (2 before 10). The next and the previous are a key away, and when
+  an episode ends the next one starts by itself: where the next file's name continues this
+  one's (the two differ in a number), not where two films merely share a folder
+- Playlists: a folder opened whole, several files opened together, or an `.m3u8` file. A list
+  can be added to, put in order and saved; it plays through, and is picked up on the file it
+  was left on
 - A native interface in the system's Liquid Glass (macOS 26 or later): open or drop a file,
   transport, and a signal panel that shows the video's range of light against the display's
 
-Only files on this machine are played. A file is never allowed to send the player to the network
-or to other files, whatever it claims to be.
+Only files on this machine are played. A video is never allowed to send the player to the network
+or to other files, whatever it claims to be. A playlist is read by the player itself, as a list
+of paths on this machine: an address of anything else in it is passed over.
 
 On Windows the same player runs through Direct3D 11, inside a native application (WinUI 3)
 with the same controls, panels and settings. It builds, plays and draws its interface on the
@@ -70,7 +81,8 @@ the signal panel offers the choice, and it is remembered.
   A small C bridge in `c/`, a safe Rust API on top.
 - `crates/audio`: sound output and the playback clock.
 - `crates/player`: the window and the playback threads. A library as well as a program, so
-  that the Windows application can carry the same player.
+  that the Windows application can carry the same player. `queue.rs` is what plays after what
+  (folders, playlists), `sidecars.rs` finds the subtitle files that belong to a video.
 - `crates/player/macos`: the interface, in SwiftUI. It is compiled into the player and talks to
   it through four C functions (`src/ui.rs`): state goes in as JSON, commands come back as text.
 - `crates/winhost`: the player as `bitspring_video_core.dll` for the Windows application. It
@@ -80,7 +92,7 @@ the signal panel offers the choice, and it is remembered.
 - `scripts/`: builds the application bundle and gathers its libraries; `sync-check.sh` records
   the player's window with its sound and measures how far a flash is from its beep.
 - `assets/icon/`: the app's icon and the script that draws it; and the script that draws the
-  pictures for video files, one for each format with the format's name on it. A file wears one
+  pictures for video files and playlists, one for each format with the format's name on it. A file wears one
   where this player is the one chosen to open it: the player offers itself for video files on
   both systems, and never takes a file type from the player already chosen.
 - `testdata/make-clips.sh`: generates test clips: grey patches at known luminance, and a flash
@@ -134,7 +146,9 @@ photographs it, and keeps the folder as a download.
 
 ```
 bitspring-video                     open the player; drop a video on it
-bitspring-video <file>              play
+bitspring-video <file>              play; the other videos of its folder follow
+bitspring-video <folder>            play the folder's videos, one after another
+bitspring-video <a> <b> <list.m3u8> play these in this order
 bitspring-video --displays          what each connected display can do
 bitspring-video --info <file>       what the file is and how it would be shown
 bitspring-video --hdr passthrough <file>
@@ -142,7 +156,8 @@ bitspring-video --audio-delay 80 <file>     the TV or receiver delays sound by 8
 ```
 
 Keys: Space pauses, Left / Right seek 5 seconds (with Shift, a minute), Up / Down change the
-volume, M mutes, S steps through the subtitle tracks, A through the sound tracks, F or a
+volume, M mutes, S steps through the subtitle tracks, A through the sound tracks, N and P go to
+the next and the previous file of the folder or the playlist, L opens the list, F or a
 double-click for full screen, I opens the signal panel, Cmd+comma the settings, Cmd+O a file. The controls hide after a few seconds of playback and return when the pointer moves.
 
 Colour in the interface means one thing. Brass: the picture reaches the screen as it was
@@ -152,10 +167,12 @@ Settings are kept in `~/Library/Application Support/BitSpring Video/settings.jso
 (`--settings <file>` to keep them elsewhere). Options given on the command line hold for that
 run and are not saved. Beside the settings, `history.json` holds where each film was stopped
 and the tracks chosen for it; a film is known by its size and the beginning of its contents, so
-renaming or moving it changes nothing. `--start <seconds>` begins there whatever is remembered.
+renaming or moving it changes nothing. It also holds which file each playlist, or folder opened
+whole, was left on. `--start <seconds>` begins there whatever is remembered.
 
 For testing without a keyboard, `--script "2:pause,4:pause,5:seek+10,9:quit"` runs commands at
-given times (`pin` keeps the controls up, `panel` opens the signal panel), and `--verbose` prints
+given times (`pin` keeps the controls up, `panel` opens the signal panel, `queue` the list;
+`next`, `previous`, `play 2`, `add <file>`, `save <list>` work the list), and `--verbose` prints
 the playback clock once a second.
 
 HDR modes:

@@ -23,6 +23,7 @@ use bsv_display::Display;
 use bsv_display::policy::{HdrMode, Output, plan};
 
 use crate::language;
+use crate::sidecars::{self, Sidecar};
 use bsv_engine::{
     AudioDecoder, AudioInfo, Decoded, Frame, Gpu, MediaInfo, Packet, Pull, Quality, Read,
     RenderStats, RenderStatus, Source, SubtitleDecoder, SubtitleEvent, SubtitleKind, Track,
@@ -106,6 +107,8 @@ pub enum Command {
     SetDolbyVision(bool),
     /// Seconds to hold the picture back against the sound.
     SetAudioDelay(f64),
+    /// Show the subtitles of this file, which may be anywhere: it was opened by hand.
+    AddSubtitles(String),
 }
 
 /// The sound track and the device it plays on.
@@ -405,7 +408,8 @@ enum ReaderCommand {
         audio: Option<i32>,
         subtitle: Option<Option<i32>>,
     },
-    /// The subtitle files found next to the video, in the order of their track numbers.
+    /// The subtitle files there are for the video (found near it, or opened by hand), in the
+    /// order of their track numbers.
     Sidecars(Vec<String>),
 }
 
@@ -422,6 +426,8 @@ enum FromReader {
     },
     /// The sound track now playing.
     Sound(AudioInfo),
+    /// A font that came with a subtitle file.
+    Font { name: String, data: Vec<u8> },
 }
 
 /// What the reading thread reports once it has tried to open the sound device.
@@ -518,7 +524,13 @@ impl SoundPath {
                     let silence = vec![0.0f32; (gap * rate) as usize * channels];
                     self.output.set_base(start);
                     self.based = true;
-                    if !queue(&mut self.output, &mut self.waiting, &silence, generation, shared) {
+                    if !queue(
+                        &mut self.output,
+                        &mut self.waiting,
+                        &silence,
+                        generation,
+                        shared,
+                    ) {
                         return Ok(());
                     }
                 }
@@ -527,7 +539,13 @@ impl SoundPath {
                     self.based = true;
                 }
             }
-            if !queue(&mut self.output, &mut self.waiting, data, generation, shared) {
+            if !queue(
+                &mut self.output,
+                &mut self.waiting,
+                data,
+                generation,
+                shared,
+            ) {
                 return Ok(());
             }
         }
@@ -572,43 +590,38 @@ fn queue(
 /// Track numbers from here up stand for subtitle files next to the video, not streams inside it.
 const SIDECAR_BASE: i32 = 1000;
 
-/// Subtitle files that belong to this video: same folder, same name, another ending
-/// ("film.srt", "film.ru.ass"). Returned with the language the name suggests.
-fn find_sidecars(video: &str) -> Vec<(String, String)> {
-    let path = std::path::Path::new(video);
-    let (Some(folder), Some(stem)) = (path.parent(), path.file_stem().and_then(|s| s.to_str()))
-    else {
-        return Vec::new();
-    };
-    let folder = if folder.as_os_str().is_empty() {
-        std::path::Path::new(".")
-    } else {
-        folder
-    };
-    let Ok(entries) = std::fs::read_dir(folder) else {
-        return Vec::new();
-    };
-    let mut found: Vec<(String, String)> = entries
-        .filter_map(|e| e.ok())
-        .filter_map(|e| {
-            let name = e.file_name().to_str()?.to_string();
-            let rest = name.strip_prefix(stem)?.strip_prefix('.')?;
-            let (middle, extension) = rest.rsplit_once('.').unwrap_or(("", rest));
-            let known =
-                ["srt", "ass", "ssa", "vtt"].contains(&extension.to_ascii_lowercase().as_str());
-            // "film.ru.srt", "film.eng.forced.srt": the first short word is taken as the language.
-            let language = middle
-                .split('.')
-                .find(|part| {
-                    (2..=3).contains(&part.len()) && part.chars().all(|c| c.is_ascii_alphabetic())
-                })
-                .unwrap_or("")
-                .to_ascii_lowercase();
-            known.then(|| (e.path().to_string_lossy().into_owned(), language))
-        })
-        .collect();
-    found.sort();
-    found
+/// The track a subtitle file is listed as.
+fn sidecar_track(number: usize, file: &Sidecar) -> Track {
+    Track {
+        index: SIDECAR_BASE + number as i32,
+        kind: TrackKind::Subtitle,
+        codec: String::new(),
+        profile: String::new(),
+        language: file.language.clone(),
+        title: file.title.clone(),
+        layout: String::new(),
+        channels: 0,
+        sample_rate: 0,
+        is_default: false,
+        forced: false,
+        hearing_impaired: false,
+        bitmap: false,
+    }
+}
+
+/// Send the fonts that come with a subtitle file: styled subtitles are drawn with them.
+fn send_fonts(subtitles: &str, video: &str, news: &Sender<FromReader>) {
+    let subtitles = std::path::Path::new(subtitles);
+    // Up to the video's folder for a file found below it; its own folder for any other.
+    let top = std::path::Path::new(video)
+        .parent()
+        .filter(|folder| subtitles.starts_with(folder));
+    for font in sidecars::fonts_for(subtitles, top) {
+        let name = font.file_name().map(|n| n.to_string_lossy().into_owned());
+        if let (Some(name), Ok(data)) = (name, std::fs::read(&font)) {
+            let _ = news.send(FromReader::Font { name, data });
+        }
+    }
 }
 
 /// Read a whole subtitle file and send everything in it. These files are small, so this is
@@ -666,6 +679,8 @@ struct Reading {
     video: Arc<PacketQueue>,
     news: Sender<FromReader>,
     shared: Arc<Shared>,
+    /// The video's path: subtitle files below its folder bring their fonts from there.
+    path: String,
 }
 
 fn read_loop(mut source: Source, reading: Reading) {
@@ -676,11 +691,14 @@ fn read_loop(mut source: Source, reading: Reading) {
         video,
         news,
         shared,
+        path: video_path,
     } = reading;
     // Subtitle files next to the video, in the order of their track numbers (they are found
     // a moment after playback starts), and the one of them being shown.
     let mut sidecars: Vec<String> = Vec::new();
     let mut sidecar: Option<String> = None;
+    // The subtitle files whose fonts have been sent.
+    let mut with_fonts: Vec<String> = Vec::new();
     // The output device is opened here because its stream must stay on the thread that made it.
     let mut sound = None;
     if let Some(track) = source.audio_info().filter(|_| sound_wanted) {
@@ -789,6 +807,10 @@ fn read_loop(mut source: Source, reading: Reading) {
                 });
             }
             if let Some(path) = &sidecar {
+                if !with_fonts.contains(path) {
+                    with_fonts.push(path.clone());
+                    send_fonts(path, &video_path, &news);
+                }
                 send_sidecar(path, generation, &news);
             }
             let moved = source.seek(to);
@@ -983,13 +1005,14 @@ fn render_loop(
         thread::Builder::new()
             .name("subtitle files".into())
             .spawn(move || {
-                let _ = found_tx.send(find_sidecars(&path));
+                let _ = found_tx.send(sidecars::find(&path));
             })
             .expect("spawn the subtitle file search");
     }
     // Sound: the track chosen for this file before; else in the language asked for, when the
     // file has it; otherwise as the file prefers.
-    let has = |kind: TrackKind, index: i32| tracks.iter().any(|t| t.kind == kind && t.index == index);
+    let has =
+        |kind: TrackKind, index: i32| tracks.iter().any(|t| t.kind == kind && t.index == index);
     if let Some(index) = options.audio_track.filter(|&i| has(TrackKind::Audio, i)) {
         let _ = source.select_audio(index);
     } else if let Some(track) = tracks.iter().find(|t| {
@@ -1040,6 +1063,7 @@ fn render_loop(
 
     let reader_thread = {
         let (packets, shared, sound) = (packets.clone(), shared.clone(), options.sound);
+        let path = options.path.clone();
         thread::Builder::new()
             .name("read".into())
             .spawn(move || {
@@ -1052,6 +1076,7 @@ fn render_loop(
                         video: packets,
                         news: news_tx,
                         shared,
+                        path,
                     },
                 )
             })
@@ -1100,6 +1125,10 @@ fn render_loop(
         pending.push_back(Command::SeekBy(options.start));
     }
     let mut sidecars_known = false;
+    // Every subtitle file there is a track for, and those opened by hand before the search
+    // for the ones near the video came back (their tracks are numbered after the found ones).
+    let mut sidecar_files: Vec<String> = Vec::new();
+    let mut opened_early: Vec<String> = Vec::new();
     // Subtitles glide out of the controls' way rather than jump.
     let mut lift_wanted = options.subtitle_lift;
     let mut lift = options.subtitle_lift;
@@ -1189,10 +1218,36 @@ fn render_loop(
                     }
                 }
                 Ok(Command::SetAudioDelay(seconds)) => timeline.audio_delay = seconds,
+                Ok(Command::AddSubtitles(file)) if !sidecars_known => opened_early.push(file),
+                Ok(Command::AddSubtitles(file)) => {
+                    let number = match sidecar_files.iter().position(|known| *known == file) {
+                        Some(number) => number,
+                        None => {
+                            let title = std::path::Path::new(&file)
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_default();
+                            let opened = Sidecar {
+                                path: file.clone(),
+                                language: String::new(),
+                                title,
+                            };
+                            tracks.push(sidecar_track(sidecar_files.len(), &opened));
+                            sidecar_files.push(file);
+                            let _ = reader_commands
+                                .send(ReaderCommand::Sidecars(sidecar_files.clone()));
+                            sidecar_files.len() - 1
+                        }
+                    };
+                    pending.push_back(Command::SelectSubtitle(Some(SIDECAR_BASE + number as i32)));
+                }
                 Ok(Command::SetDolbyVision(apply)) => {
                     gpu.set_dolby_vision(apply);
                     // Frames already decoded were taken the other way: decode again from here.
-                    if info.dolby_vision.is_some_and(|dv| dv.base_layer().is_some()) {
+                    if info
+                        .dolby_vision
+                        .is_some_and(|dv| dv.base_layer().is_some())
+                    {
                         jump = Some((timeline.position(), None, None));
                     }
                 }
@@ -1227,29 +1282,11 @@ fn render_loop(
         // The search for subtitle files next to the video has come back.
         if !sidecars_known && let Ok(found) = found_sidecars.try_recv() {
             sidecars_known = true;
-            for (n, (path, language)) in found.iter().enumerate() {
-                let name = std::path::Path::new(path)
-                    .file_name()
-                    .map(|f| f.to_string_lossy().into_owned());
-                tracks.push(Track {
-                    index: SIDECAR_BASE + n as i32,
-                    kind: TrackKind::Subtitle,
-                    codec: String::new(),
-                    profile: String::new(),
-                    language: language.clone(),
-                    title: name.unwrap_or_default(),
-                    layout: String::new(),
-                    channels: 0,
-                    sample_rate: 0,
-                    is_default: false,
-                    forced: false,
-                    hearing_impaired: false,
-                    bitmap: false,
-                });
+            for (n, file) in found.iter().enumerate() {
+                tracks.push(sidecar_track(n, file));
+                sidecar_files.push(file.path.clone());
             }
-            let _ = reader_commands.send(ReaderCommand::Sidecars(
-                found.iter().map(|(p, _)| p.clone()).collect(),
-            ));
+            let _ = reader_commands.send(ReaderCommand::Sidecars(sidecar_files.clone()));
             // A file someone put next to the video is shown without being asked for, unless a
             // track in the preferred language is already on and this file is not in it.
             let wanted = match options.subtitles {
@@ -1261,12 +1298,14 @@ fn render_loop(
                 Some(_) => None,
                 None => found
                     .iter()
-                    .position(|(_, l)| language::same(l, &options.subtitle_language))
+                    .position(|f| language::same(&f.language, &options.subtitle_language))
                     .or((!chosen_by_language && !found.is_empty()).then_some(0)),
             };
             if let Some(n) = wanted {
                 pending.push_back(Command::SelectSubtitle(Some(SIDECAR_BASE + n as i32)));
             }
+            // What was opened by hand meanwhile comes after, and so is what ends up showing.
+            pending.extend(opened_early.drain(..).map(Command::AddSubtitles));
         }
         // Subtitles and track changes from the reading thread.
         while let Ok(item) = news.try_recv() {
@@ -1283,6 +1322,7 @@ fn render_loop(
                 } if g == generation => gpu.push_subtitle(event),
                 // Left over from before the last seek.
                 FromReader::Subtitles { .. } | FromReader::Subtitle { .. } => {}
+                FromReader::Font { name, data } => gpu.add_font(&name, &data),
                 FromReader::Sound(track) => {
                     if let Some(sound) = &mut sound {
                         sound.track = track;

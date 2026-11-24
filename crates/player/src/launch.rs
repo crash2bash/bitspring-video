@@ -7,7 +7,8 @@ use bsv_engine::Quality;
 
 /// What the command line set, applied to every file opened in this run.
 pub struct Settings {
-    pub path: Option<String>,
+    /// What to play: a video, a folder, a playlist, or several of them.
+    pub paths: Vec<String>,
     /// Where preferences are kept.
     pub preferences: PathBuf,
     /// Choices made on the command line: they hold for this run and are not saved.

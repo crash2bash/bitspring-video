@@ -60,10 +60,11 @@ final class InterfaceController {
         }
 
         model.send = { [weak self] command in
-            if command == "open-dialog" {
-                self?.chooseFile()
-            } else {
-                command.withCString { callback($0, user) }
+            switch command {
+            case "open-dialog": self?.chooseFiles(adding: false)
+            case "add-dialog": self?.chooseFiles(adding: true)
+            case "save-dialog": self?.savePlaylist()
+            default: command.withCString { callback($0, user) }
             }
         }
         model.onControlsVisibility = { [weak self] visible in
@@ -110,6 +111,9 @@ final class InterfaceController {
         case "settings":
             model.toggle(.settings)
             model.reveal()
+        case "queue":
+            model.toggle(.queue)
+            model.reveal()
         case "pin":
             model.pinned = true
             model.reveal()
@@ -130,7 +134,7 @@ final class InterfaceController {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if flags.contains(.command) {
             if event.charactersIgnoringModifiers == "o" {
-                chooseFile()
+                chooseFiles(adding: false)
                 return true
             }
             if event.charactersIgnoringModifiers == "," {
@@ -161,6 +165,11 @@ final class InterfaceController {
             case "m": model.send("toggle-mute")
             case "s": model.cycleSubtitles()
             case "a": model.cycleSound()
+            case "n": model.send("next")
+            case "p": model.send("previous")
+            case "l":
+                guard model.status.queue != nil else { return false }
+                model.toggle(.queue)
             case "i":
                 guard model.status.video != nil else { return false }
                 model.toggle(.signal)
@@ -170,17 +179,38 @@ final class InterfaceController {
         return true
     }
 
-    private func chooseFile() {
+    /// Choose what to play, or what to put at the end of the list: videos, a folder of
+    /// them, a playlist, or a subtitle file for the video that is playing.
+    private func chooseFiles(adding: Bool) {
         guard let window = view.window else { return }
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        panel.message = L("Choose a video to play", "Выберите видео")
-        panel.prompt = L("Play", "Играть")
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = true
+        panel.message = adding
+            ? L("Choose what to add to the list", "Выберите, что добавить в список")
+            : L("Choose a video, several, or a folder of them", "Выберите видео, несколько или папку с ними")
+        panel.prompt = adding ? L("Add", "Добавить") : L("Play", "Играть")
+        panel.beginSheetModal(for: window) { [weak self] response in
+            let paths = panel.urls.map(\.path)
+            guard response == .OK, !paths.isEmpty else { return }
+            self?.model.send((adding ? "queue-add " : "open ") + paths.joined(separator: "\n"))
+        }
+    }
+
+    /// Write the list to a playlist file: plain text, one path to a line.
+    private func savePlaylist() {
+        guard let window = view.window, let queue = model.status.queue else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: "m3u8") ?? .plainText]
+        panel.nameFieldStringValue = (queue.name.isEmpty ? L("Playlist", "Плейлист") : queue.name) + ".m3u8"
+        panel.message = L(
+            "The playlist is a text file that names the videos. They stay where they are.",
+            "Плейлист — текстовый файл с именами видео. Сами видео остаются на месте.")
+        panel.prompt = L("Save", "Сохранить")
         panel.beginSheetModal(for: window) { [weak self] response in
             guard response == .OK, let url = panel.url else { return }
-            self?.model.send("open \(url.path)")
+            self?.model.send("queue-save \(url.path)")
         }
     }
 
@@ -219,11 +249,11 @@ enum Arrivals {
     static weak var controller: InterfaceController?
 
     static func open(_ paths: [String]) {
-        guard let path = paths.first else { return }
+        guard !paths.isEmpty else { return }
         if let controller {
-            controller.model.send("open \(path)")
+            controller.model.send("open " + paths.joined(separator: "\n"))
         } else {
-            waiting = [path]
+            waiting = paths
         }
     }
 }

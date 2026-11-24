@@ -16,7 +16,9 @@ use std::time::{Duration, Instant};
 use bitspring_video::history::{Memory, ResumeNote};
 use bitspring_video::playback::{Command, Options, Player};
 use bitspring_video::prefs::Preferences;
+use bitspring_video::queue::{Arrived, Queue};
 use bitspring_video::report;
+use bitspring_video::sidecars;
 use bitspring_video::ui::{self, Playing, Request, State, View};
 use bsv_display::policy::HdrMode;
 use bsv_display::{Display, HdrStatus, Luminance, LuminanceSource, OsReport};
@@ -88,6 +90,10 @@ pub struct Host {
     session: Option<Session>,
     /// Where each file was stopped, and the tracks chosen for it.
     memory: Memory,
+    /// What plays after what: the folder of the file that was opened, or a playlist.
+    queue: Queue,
+    /// Subtitle files opened together with a video: shown once the video starts.
+    subtitles_to_add: Vec<String>,
     /// The display as the system reports it, and which one the window is on.
     display: Display,
     monitor: u64,
@@ -150,6 +156,8 @@ impl Host {
         Host {
             session: None,
             memory: Memory::beside(&preferences_path),
+            queue: Queue::default(),
+            subtitles_to_add: Vec::new(),
             display,
             monitor: 0,
             last_display_poll: Instant::now(),
@@ -221,7 +229,38 @@ impl Host {
         self.clear_panel = true;
     }
 
-    fn open(&mut self, path: &str) {
+    /// Something was opened: a video is played and its folder becomes the list around it; a
+    /// folder, a playlist or several files become the list, played once it has been read.
+    /// Subtitle files are shown with the video: the one opened with them, or the one playing.
+    fn open(&mut self, paths: Vec<String>) {
+        let (subtitles, others): (Vec<String>, Vec<String>) = paths
+            .into_iter()
+            .partition(|path| sidecars::is_subtitle_file(path));
+        if others.is_empty() {
+            if self.session.is_some() {
+                for file in subtitles {
+                    self.send(Command::AddSubtitles(file));
+                }
+            } else if !subtitles.is_empty() {
+                self.error = Some("Subtitles go with a video: open the video first.".into());
+            }
+            return;
+        }
+        self.subtitles_to_add = subtitles;
+        let others = others.into_iter().map(PathBuf::from).collect();
+        if let Some(file) = self.queue.open(others) {
+            self.play(&file.to_string_lossy());
+        }
+    }
+
+    /// Play the file at this place in the list.
+    fn go(&mut self, index: Option<usize>) {
+        if let Some(file) = index.and_then(|index| self.queue.go(index)) {
+            self.play(&file.to_string_lossy());
+        }
+    }
+
+    fn play(&mut self, path: &str) {
         self.close();
         self.error = None;
         let file_name = Path::new(path)
@@ -230,6 +269,10 @@ impl Host {
             .unwrap_or_else(|| path.to_string());
         bsv_engine::log_line(&format!("File:    {path}"));
         let recalled = self.memory.opened(path);
+        // A folder opened whole, or a playlist, is picked up on this file the next time.
+        if let Some(list) = self.queue.remembered_as() {
+            self.memory.list_at(list, Path::new(path));
+        }
         if let Some(from) = recalled.start {
             bsv_engine::log_line(&format!("Resume:  from {}", report::clock(from)));
         }
@@ -260,6 +303,9 @@ impl Host {
                 *slot.lock().unwrap() = Some(unsafe { ComRef::adopt(swapchain) });
             });
         player.send(Command::Scale(self.scale));
+        for file in self.subtitles_to_add.drain(..) {
+            player.send(Command::AddSubtitles(file));
+        }
         self.clear_panel = false;
         self.session = Some(Session {
             player,
@@ -302,7 +348,20 @@ impl Host {
             }
             Some(Request::Player(command)) => self.send(command),
             Some(Request::Set(key, value)) => self.set_preference(&key, &value),
-            Some(Request::Open(path)) => self.open(&path),
+            Some(Request::Open(paths)) => self.open(paths),
+            Some(Request::Add(paths)) => self
+                .queue
+                .add(paths.into_iter().map(PathBuf::from).collect()),
+            Some(Request::Next) => self.go(self.queue.next()),
+            Some(Request::Previous) => self.go(self.queue.previous()),
+            Some(Request::Play(index)) => self.go(Some(index)),
+            Some(Request::Remove(index)) => self.queue.remove(index),
+            Some(Request::Move(from, to)) => self.queue.move_item(from, to),
+            Some(Request::Save(file)) => {
+                if let Err(e) = self.queue.save(Path::new(&file)) {
+                    bsv_engine::log_line(&format!("[warn] cannot save the playlist: {e}"));
+                }
+            }
             Some(Request::ControlsVisible(visible)) => {
                 self.controls_visible = visible;
                 self.send(Command::SubtitleLift(self.subtitle_lift()));
@@ -329,6 +388,29 @@ impl Host {
     /// Bring everything up to date and describe it for the interface.
     fn refresh(&mut self) {
         self.poll_display();
+        // A folder or a playlist that was opened has been read.
+        match self.queue.poll(|list| self.memory.list_left_at(list)) {
+            Arrived::Play(file) => self.play(&file.to_string_lossy()),
+            Arrived::Failed(e) => {
+                bsv_engine::log_line(&format!("[error] {e}"));
+                if self.session.is_none() {
+                    self.error = Some(e);
+                }
+            }
+            Arrived::Nothing => {}
+        }
+        // An episode has ended and the next one is there: go on to it.
+        if self.prefs.auto_next
+            && self
+                .session
+                .as_ref()
+                .is_some_and(|s| s.player.status().ended)
+            && let Some(next) = self.queue.after_end()
+        {
+            bsv_engine::log_line("Next:    the file has ended, going on to the one after it");
+            self.go(Some(next));
+        }
+        let queue = self.session.is_some().then(|| self.queue.state().clone());
         let shown = self.shown_display();
         let mut failed = None;
         let mut json = None;
@@ -379,6 +461,7 @@ impl Host {
                 muted: status.muted,
                 mode: status.mode,
                 prefs: &self.prefs,
+                queue: queue.as_ref(),
             });
             json = serde_json::to_string(&state).ok();
         }
@@ -398,6 +481,7 @@ impl Host {
                 muted: self.muted,
                 mode: self.mode,
                 prefs: &self.prefs,
+                queue: None,
             });
             json = serde_json::to_string(&state).ok();
         }

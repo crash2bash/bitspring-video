@@ -26,7 +26,9 @@ use crate::launch::Settings;
 
 use crate::playback::{Command, Options, Player};
 use crate::prefs::Preferences;
+use crate::queue::{Arrived, Queue};
 use crate::report;
+use crate::sidecars;
 use crate::surface::Surface;
 use crate::ui::{self, Interface, Playing, Request, State, View};
 
@@ -72,6 +74,10 @@ struct Running {
     preferences_path: PathBuf,
     /// Where each file was stopped, and the tracks chosen for it.
     memory: Memory,
+    /// What plays after what: the folder of the file that was opened, or a playlist.
+    queue: Queue,
+    /// Subtitle files opened together with a video: shown once the video starts.
+    subtitles_to_add: Vec<String>,
     // Carried from one file to the next.
     volume: f32,
     muted: bool,
@@ -198,9 +204,41 @@ fn display_of(window: &Window) -> Display {
 // ---- The application --------------------------------------------------------------------------
 
 impl Running {
+    /// Something was opened: by a drop, from the dialog, from Finder, on the command line.
+    /// A video is played, and its folder becomes the list around it; a folder, a playlist or
+    /// several files become the list, and its first file is played once it has been read.
+    /// Subtitle files are shown with the video: the one opened with them, or the one playing.
+    fn open(&mut self, paths: Vec<String>, settings: &Settings, start: Option<f64>) {
+        let (subtitles, others): (Vec<String>, Vec<String>) = paths
+            .into_iter()
+            .partition(|path| sidecars::is_subtitle_file(path));
+        if others.is_empty() {
+            if self.session.is_some() {
+                for file in subtitles {
+                    self.send(Command::AddSubtitles(file));
+                }
+            } else if !subtitles.is_empty() {
+                self.error = Some("Subtitles go with a video: open the video first.".into());
+            }
+            return;
+        }
+        self.subtitles_to_add = subtitles;
+        let others = others.into_iter().map(PathBuf::from).collect();
+        if let Some(file) = self.queue.open(others) {
+            self.play(&file.to_string_lossy(), settings, start);
+        }
+    }
+
+    /// Play the file at this place in the list.
+    fn go(&mut self, index: Option<usize>, settings: &Settings) {
+        if let Some(file) = index.and_then(|index| self.queue.go(index)) {
+            self.play(&file.to_string_lossy(), settings, None);
+        }
+    }
+
     /// Play `path`, replacing whatever is playing. `start` is where to begin, in seconds,
     /// when the command line says; otherwise where the file was stopped the last time.
-    fn open(&mut self, path: &str, settings: &Settings, start: Option<f64>) {
+    fn play(&mut self, path: &str, settings: &Settings, start: Option<f64>) {
         // The old session must be gone before a new renderer takes the layer.
         self.session = None;
         self.error = None;
@@ -214,6 +252,10 @@ impl Running {
             .unwrap_or_else(|| path.to_string());
         println!("File:    {path}");
         let recalled = self.memory.opened(path);
+        // A folder opened whole, or a playlist, is picked up on this file the next time.
+        if let Some(list) = self.queue.remembered_as() {
+            self.memory.list_at(list, Path::new(path));
+        }
         let resumed_from = recalled.start.filter(|_| start.is_none());
         if let Some(from) = resumed_from {
             println!("Resume:  from {}", report::clock(from));
@@ -249,6 +291,9 @@ impl Running {
                 options,
             )
         };
+        for file in self.subtitles_to_add.drain(..) {
+            player.send(Command::AddSubtitles(file));
+        }
         self.window.set_title(&file_name);
         self.session = Some(Session {
             player,
@@ -403,7 +448,20 @@ impl Running {
                 self.controls_visible = visible;
                 self.send(Command::SubtitleLift(self.subtitle_lift()));
             }
-            Request::Open(path) => self.open(&path, settings, None),
+            Request::Open(paths) => self.open(paths, settings, None),
+            Request::Add(paths) => self
+                .queue
+                .add(paths.into_iter().map(PathBuf::from).collect()),
+            Request::Next => self.go(self.queue.next(), settings),
+            Request::Previous => self.go(self.queue.previous(), settings),
+            Request::Play(index) => self.go(Some(index), settings),
+            Request::Remove(index) => self.queue.remove(index),
+            Request::Move(from, to) => self.queue.move_item(from, to),
+            Request::Save(file) => {
+                if let Err(e) = self.queue.save(Path::new(&file)) {
+                    eprintln!("[warn] cannot save the playlist: {e}");
+                }
+            }
             Request::ToggleFullscreen => self.toggle_fullscreen(),
             Request::ExitFullscreen => self.window.set_fullscreen(None),
         }
@@ -411,9 +469,33 @@ impl Running {
 
     /// Look at the playback state: print what changed, keep the layer and the title in step,
     /// and tell the interface.
-    fn refresh(&mut self) {
+    fn refresh(&mut self, settings: &Settings) {
+        // A folder or a playlist that was opened has been read.
+        match self.queue.poll(|list| self.memory.list_left_at(list)) {
+            Arrived::Play(file) => self.play(&file.to_string_lossy(), settings, None),
+            Arrived::Failed(e) => {
+                eprintln!("bitspring-video: {e}");
+                if self.session.is_none() {
+                    self.error = Some(e);
+                }
+            }
+            Arrived::Nothing => {}
+        }
+        // An episode has ended and the next one is there: go on to it.
+        if self.prefs.auto_next
+            && self
+                .session
+                .as_ref()
+                .is_some_and(|s| s.player.status().ended)
+            && let Some(next) = self.queue.after_end()
+        {
+            println!("Next:    the file has ended, going on to the one after it");
+            self.go(Some(next), settings);
+        }
+
         let mut failed = None;
         let shown = self.shown_display();
+        let queue = self.session.is_some().then(|| self.queue.state().clone());
         if let Some(session) = &mut self.session {
             let status = session.player.status();
             if let Some(e) = &status.error {
@@ -522,6 +604,7 @@ impl Running {
                 muted: status.muted,
                 mode: status.mode,
                 prefs: &self.prefs,
+                queue: queue.as_ref(),
             });
             self.interface.show(&state);
 
@@ -564,6 +647,7 @@ impl Running {
                 muted: self.muted,
                 mode: self.mode,
                 prefs: &self.prefs,
+                queue: None,
             });
             self.interface.show(&state);
         }
@@ -642,11 +726,17 @@ impl App {
             prefs,
             preferences_path: self.settings.preferences.clone(),
             memory: Memory::beside(&self.settings.preferences),
+            queue: Queue::default(),
+            subtitles_to_add: Vec::new(),
         };
-        if let Some(path) = self.settings.path.clone() {
-            running.open(&path, &self.settings, self.settings.start);
+        if !self.settings.paths.is_empty() {
+            running.open(
+                self.settings.paths.clone(),
+                &self.settings,
+                self.settings.start,
+            );
         }
-        running.refresh();
+        running.refresh(&self.settings);
         self.running = Some(running);
         Ok(())
     }
@@ -700,7 +790,23 @@ impl App {
                 a if a.starts_with("volume") => {
                     r.send(Command::VolumeBy(number(&a[6..]) as f32 / 100.0))
                 }
-                a if a.starts_with("open ") => r.open(a[5..].trim(), &self.settings, None),
+                "next" => r.go(r.queue.next(), &self.settings),
+                "previous" => r.go(r.queue.previous(), &self.settings),
+                "queue" => r.interface.perform("queue"),
+                a if a.starts_with("play ") => {
+                    r.go(Some(number(a[5..].trim()) as usize), &self.settings)
+                }
+                a if a.starts_with("open ") => {
+                    let paths = a[5..].split('|').map(|p| p.trim().to_string()).collect();
+                    r.open(paths, &self.settings, None)
+                }
+                a if a.starts_with("add ") => r.handle(
+                    Request::Add(a[4..].split('|').map(|p| p.trim().to_string()).collect()),
+                    &self.settings,
+                ),
+                a if a.starts_with("save ") => {
+                    r.handle(Request::Save(a[5..].trim().to_string()), &self.settings)
+                }
                 other => eprintln!("[warn] unknown script command \"{other}\""),
             }
         }
@@ -781,7 +887,7 @@ impl ApplicationHandler for App {
             #[cfg(not(target_os = "macos"))]
             WindowEvent::DroppedFile(path) => {
                 r.handle(
-                    Request::Open(path.to_string_lossy().into_owned()),
+                    Request::Open(vec![path.to_string_lossy().into_owned()]),
                     &self.settings,
                 );
             }
@@ -857,7 +963,7 @@ impl ApplicationHandler for App {
         }
         self.run_script(event_loop);
         if let Some(r) = &mut self.running {
-            r.refresh();
+            r.refresh(&self.settings);
         }
         let wait = if self.settings.script.is_empty() {
             INTERFACE_REFRESH

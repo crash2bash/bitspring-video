@@ -107,10 +107,40 @@ internal static class Words
 
     public static string SubtitleLabel(TrackInfo track)
     {
-        var parts = new List<string> { LanguageName(track.Language) ?? L($"Track {track.Id}", $"Дорожка {track.Id}") };
+        var parts = new List<string>();
+        // A file beside the video has a name and no number of its own.
+        if (LanguageName(track.Language) is string language) parts.Add(language);
+        else if (track.Id < 1000 || track.Title.Length == 0) parts.Add(L($"Track {track.Id}", $"Дорожка {track.Id}"));
         if (track.Title.Length > 0) parts.Add(track.Title);
         if (track.Forced) parts.Add(L("forced", "форсированные"));
         if (track.HearingImpaired) parts.Add(L("for the hard of hearing", "для слабослышащих"));
         return string.Join(", ", parts);
+    }
+
+    public static string Videos(int count) => L(count == 1 ? "1 video" : $"{count} videos", $"{count} видео");
+
+    /// <summary>The folder's name or the playlist's, or what to call a list nobody has named yet.</summary>
+    public static string QueueTitle(QueueInfo queue) =>
+        queue.Name.Length > 0 ? queue.Name
+        : queue.IsPlaylist ? L("New playlist", "Новый плейлист") : L("Folder", "Папка");
+
+    /// <summary>One or two sentences: what the list is, and what happens when the file ends.</summary>
+    public static string QueueExplanation(QueueInfo queue, bool autoNext)
+    {
+        var count = Videos(queue.Items.Count);
+        var what = !queue.IsPlaylist ? L($"A folder with {count}.", $"Папка, {count}.")
+            : queue.Unsaved ? L($"A playlist of {count}, changed since it was saved.", $"Плейлист, {count}, изменён после сохранения.")
+            : queue.Name.Length == 0 ? L($"A playlist of {count}, not saved yet.", $"Плейлист, {count}, пока не сохранён.")
+            : L($"A playlist of {count}.", $"Плейлист, {count}.");
+        if (queue.Items.Count < 2)
+            return queue.IsPlaylist ? what : L(
+                "The only video in its folder. Add others to make a playlist.",
+                "Единственное видео в папке. Добавьте другие, чтобы собрать плейлист.");
+        var then = !queue.HasNext ? L("This is the last one.", "Это последнее.")
+            : !autoNext ? L("The player stops after each one.", "После каждого плеер останавливается.")
+            : queue.Continues ? L("The next one starts by itself.", "Следующее начнётся само.")
+            : L("The next one is not a continuation of this one by its name, so the player stops after it.",
+                "Следующее по названию не продолжает это, поэтому после него плеер остановится.");
+        return what + " " + then;
     }
 }

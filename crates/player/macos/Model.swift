@@ -99,11 +99,34 @@ struct SettingsInfo: Codable, Equatable {
     var audioLanguage: String
     /// Milliseconds the picture is held back.
     var audioDelay: Double
+    /// When a file ends, the next one of its series or its playlist starts by itself.
+    var autoNext: Bool
 
     static let standard = SettingsInfo(
         displayPeak: nil, reportedPeak: 0, quality: "high", hardwareDecoding: true, dolbyVision: true,
         subtitleScale: 1,
-        subtitleNits: 203, subtitleLanguage: "", audioLanguage: "", audioDelay: 0)
+        subtitleNits: 203, subtitleLanguage: "", audioLanguage: "", audioDelay: 0, autoNext: true)
+}
+
+/// One file of the queue.
+struct QueueItem: Codable, Equatable {
+    /// What to call it in the list: its name without what it shares with its neighbours.
+    var label: String
+    var name: String
+}
+
+/// What plays after what: the videos of the open file's folder, or a playlist.
+struct QueueInfo: Codable, Equatable {
+    /// "folder" or "playlist".
+    var kind: String
+    /// The folder's name or the playlist's; empty for a list not saved yet.
+    var name: String
+    /// A playlist changed since it was read or saved.
+    var unsaved: Bool
+    var current: Int?
+    /// Whether the next file starts by itself when this one ends.
+    var continues: Bool
+    var items: [QueueItem]
 }
 
 struct Status: Codable, Equatable {
@@ -131,6 +154,7 @@ struct Status: Codable, Equatable {
     var subtitleTrack: Int?
     var display: DisplayInfo
     var settings: SettingsInfo
+    var queue: QueueInfo?
 
     static let empty = Status(
         file: nil, error: nil, position: 0, duration: 0, paused: false, ended: false,
@@ -207,7 +231,7 @@ final class PlayerModel: ObservableObject {
     @Published var status = Status.empty
     @Published var controlsVisible = true
     /// The panel open at the top right, if any. One at a time.
-    enum Panel { case none, signal, settings }
+    enum Panel { case none, signal, settings, queue }
     @Published var panel = Panel.none
 
     func toggle(_ wanted: Panel) {
@@ -254,7 +278,7 @@ final class PlayerModel: ObservableObject {
         let wasPlaying = isPlaying
         if new != status { status = new }
         if status.file == nil {
-            if panel == .signal { panel = .none }
+            if panel == .signal || panel == .queue { panel = .none }
             hovered.removeAll()
         }
         if isPlaying != wasPlaying { isPlaying ? scheduleHide() : reveal() }
@@ -298,6 +322,17 @@ final class PlayerModel: ObservableObject {
         } else {
             send("subtitle-track \(ids[0])")
         }
+    }
+
+    /// Move a file of the queue. Shown at once, without waiting for the player to say so.
+    func moveInQueue(from: Int, to: Int) {
+        if var queue = status.queue, queue.items.indices.contains(from), queue.items.indices.contains(to) {
+            let playing = queue.current.map { queue.items[$0] }
+            queue.items.insert(queue.items.remove(at: from), at: to)
+            if let playing { queue.current = queue.items.firstIndex(of: playing) }
+            status.queue = queue
+        }
+        send("queue-move \(from) \(to)")
     }
 
     func cycleSound() {

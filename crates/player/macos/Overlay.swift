@@ -131,7 +131,12 @@ extension TrackInfo {
     /// How a subtitle track reads in the menu: "Russian, forced".
     var subtitleLabel: String {
         var parts: [String] = []
-        parts.append(languageName(language) ?? L("Track \(id)", "Дорожка \(id)"))
+        // A file beside the video has a name and no number of its own.
+        if let language = languageName(language) {
+            parts.append(language)
+        } else if id < 1000 || title.isEmpty {
+            parts.append(L("Track \(id)", "Дорожка \(id)"))
+        }
         if !title.isEmpty { parts.append(title) }
         if forced { parts.append(L("forced", "форсированные")) }
         if hearingImpaired { parts.append(L("for the hard of hearing", "для слабослышащих")) }
@@ -220,48 +225,68 @@ struct PlayerOverlay: View {
         .environment(\.colorScheme, .dark)
         .foregroundStyle(Color.porcelain)
         .onDrop(of: [.fileURL], isTargeted: $model.dropTargeted) { providers in
-            guard let provider = providers.first else { return false }
-            _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                guard let url else { return }
-                DispatchQueue.main.async { model.send("open \(url.path)") }
-            }
+            guard !providers.isEmpty else { return false }
+            droppedPaths(providers) { model.send("open " + $0.joined(separator: "\n")) }
             return true
         }
     }
 
     private var controls: some View {
-        GlassEffectContainer(spacing: 18) {
-            VStack(spacing: 0) {
-                HStack(alignment: .top, spacing: 12) {
-                    TitleCapsule(model: model)
-                        .onHover { model.hover("title", $0) }
-                    Spacer(minLength: 12)
-                    SettingsCorner(model: model, glass: glass)
-                        .onHover { model.hover("settings", $0) }
-                    if model.panel == .signal {
-                        SignalPanel(model: model)
-                            .glassEffect(playerGlass(), in: .rect(cornerRadius: 24, style: .continuous))
-                            .glassEffectID("signal", in: glass)
-                            .onHover { model.hover("signal", $0) }
-                    } else if model.status.video != nil {
-                        SignalLens(model: model)
-                            .glassEffect(playerGlass(interactive: true), in: .capsule)
-                            .glassEffectID("signal", in: glass)
-                            .onHover { model.hover("signal", $0) }
+        GeometryReader { geometry in
+            let width = geometry.size.width
+            let panel = model.panel
+            // The window's own close, minimise and zoom buttons sit top left unless in full screen.
+            let leading: CGFloat = model.status.fullscreen ? 20 : 92
+            // An open panel is 372 wide. In a window too narrow for it and everything else,
+            // the lens on the other side steps out until the panel closes.
+            let showsSignal = model.status.video != nil
+                && !(panel == .queue && width < 800) && !(panel == .settings && width < 930)
+            let showsQueue = !(panel == .signal && width < 740) && !(panel == .settings && width < 700)
+
+            GlassEffectContainer(spacing: 18) {
+                VStack(spacing: 0) {
+                    HStack(alignment: .top, spacing: 12) {
+                        // The list opens in the place of the file's name: it says the same and more.
+                        if panel != .queue {
+                            // The name takes what the row has left, and is cut short where
+                            // that is not enough.
+                            TitleCapsule(model: model)
+                                .onHover { model.hover("title", $0) }
+                                .layoutPriority(1)
+                        }
+                        if showsQueue {
+                            QueueCorner(model: model, glass: glass, listHeight: geometry.size.height - 330)
+                                .onHover { model.hover("queue", $0) }
+                        }
+                        Spacer(minLength: 0)
+                        SettingsCorner(model: model, glass: glass)
+                            .onHover { model.hover("settings", $0) }
+                        if panel == .signal {
+                            SignalPanel(model: model)
+                                .glassEffect(playerGlass(), in: .rect(cornerRadius: 24, style: .continuous))
+                                .glassEffectID("signal", in: glass)
+                                .onHover { model.hover("signal", $0) }
+                        } else if showsSignal {
+                            SignalLens(model: model)
+                                .fixedSize()
+                                .glassEffect(playerGlass(interactive: true), in: .capsule)
+                                .glassEffectID("signal", in: glass)
+                                .onHover { model.hover("signal", $0) }
+                        }
                     }
+                    .padding(.leading, leading)
+                    .padding(.trailing, 20)
+                    .padding(.top, Layout.topInset)
+
+                    Spacer(minLength: 0)
+
+                    Transport(model: model)
+                        .onHover { model.hover("transport", $0) }
+                        .frame(maxWidth: 820)
+                        .padding(.horizontal, 24)
+                        .padding(.bottom, 22)
                 }
-                // The window's own close, minimise and zoom buttons sit top left unless in full screen.
-                .padding(.leading, model.status.fullscreen ? 20 : 92)
-                .padding(.trailing, 20)
-                .padding(.top, Layout.topInset)
-
-                Spacer(minLength: 0)
-
-                Transport(model: model)
-                    .onHover { model.hover("transport", $0) }
-                    .frame(maxWidth: 820)
-                    .padding(.horizontal, 24)
-                    .padding(.bottom, 22)
+                .frame(width: width)
             }
         }
     }
@@ -305,23 +330,38 @@ private struct TitleCapsule: View {
         Button {
             model.send("open-dialog")
         } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "folder")
-                    .font(.system(size: 13, weight: .medium))
-                Text(model.status.file ?? "")
-                    .font(.system(size: 13, weight: .medium))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+            Hug(limit: 420) {
+                HStack(spacing: 8) {
+                    Image(systemName: "folder")
+                        .font(.system(size: 13, weight: .medium))
+                    Text(model.status.file ?? "")
+                        .font(.system(size: 13, weight: .medium))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .padding(.horizontal, 14)
             }
-            .padding(.horizontal, 14)
             .frame(height: 36)
-            .frame(maxWidth: 420)
-            .fixedSize(horizontal: true, vertical: false)
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .glassEffect(playerGlass(interactive: true), in: .capsule)
-        .help(L("Open another file", "Открыть другой файл"))
+        .help(L("Open another video, a folder or a playlist", "Открыть другое видео, папку или плейлист"))
+    }
+}
+
+/// As wide as what is in it wants to be, up to a limit, and narrower when offered less.
+struct Hug: SwiftUI.Layout {
+    var limit: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: LayoutSubviews, cache: inout ()) -> CGSize {
+        guard let view = subviews.first else { return .zero }
+        let wanted = view.sizeThatFits(.unspecified)
+        return CGSize(width: min(wanted.width, limit, proposal.width ?? .infinity), height: wanted.height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: LayoutSubviews, cache: inout ()) {
+        subviews.first?.place(at: bounds.origin, proposal: ProposedViewSize(bounds.size))
     }
 }
 
@@ -678,6 +718,11 @@ private struct Transport: View {
 
     var body: some View {
         HStack(spacing: 12) {
+            if let queue = status.queue, queue.items.count > 1 {
+                step("backward.end.fill", "previous", queue.hasPrevious, L("The one before", "Предыдущее"), key: "P")
+                    .padding(.trailing, -6)
+            }
+
             Button {
                 model.send(status.ended ? "seek-to 0" : "toggle-pause")
             } label: {
@@ -691,6 +736,11 @@ private struct Transport: View {
             }
             .buttonStyle(.plain)
             .help(status.paused ? L("Play", "Играть") : L("Pause", "Пауза"))
+
+            if let queue = status.queue, queue.items.count > 1 {
+                step("forward.end.fill", "next", queue.hasNext, L("The next one", "Следующее"), key: "N")
+                    .padding(.leading, -6)
+            }
 
             Text(clock(model.shownPosition))
                 .font(.figures(15))
@@ -793,6 +843,25 @@ private struct Transport: View {
         .padding(.trailing, 10)
         .frame(height: 56)
         .glassEffect(playerGlass(), in: .capsule)
+    }
+
+    /// To the file before or after this one in the queue.
+    private func step(
+        _ symbol: String, _ command: String, _ possible: Bool, _ name: String, key: String
+    ) -> some View {
+        Button {
+            model.send(command)
+        } label: {
+            Image(systemName: symbol)
+                .font(.system(size: 13, weight: .medium))
+                .frame(width: 28, height: 40)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!possible)
+        .opacity(possible ? 1 : 0.3)
+        .help("\(name) (\(key))")
+        .accessibilityLabel(name)
     }
 
     private var subtitleChoice: Binding<Int> {
@@ -903,6 +972,14 @@ private struct EmptyState: View {
             Text(L("Drop a video here", "Перетащите сюда видео"))
                 .font(.system(size: 30, weight: .semibold))
 
+            Text(L(
+                "Or a folder of them, or a playlist. Subtitles can be dropped on a video that is playing.",
+                "Или папку с ними, или плейлист. Субтитры можно бросить на видео, которое уже играет."))
+                .font(.system(size: 14))
+                .foregroundStyle(Color.quiet)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 460)
+
             Text(displayLine)
                 .font(.system(size: 14))
                 .foregroundStyle(model.status.display.hdr == "off" ? Color.brass : Color.quiet)
@@ -920,7 +997,7 @@ private struct EmptyState: View {
             Button {
                 model.send("open-dialog")
             } label: {
-                Text(L("Open a file…", "Открыть файл…"))
+                Text(L("Open…", "Открыть…"))
                     .font(.system(size: 14, weight: .medium))
                     .padding(.horizontal, 20)
                     .frame(height: 38)

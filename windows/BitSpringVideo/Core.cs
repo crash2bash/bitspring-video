@@ -150,6 +150,8 @@ internal sealed class PlayerState
     public int? SubtitleTrack;
     public DisplayInfo Display = new();
     public SettingsInfo Settings = new();
+    /// <summary>What plays after what: the folder's videos, or a playlist.</summary>
+    public QueueInfo? Queue;
 
     public bool IsPlaying => File != null && !Paused && !Ended;
     public bool IsHdrSource => Video != null && Video.Transfer != "SDR";
@@ -283,4 +285,35 @@ internal sealed class SettingsInfo
     public string SubtitleLanguage = "";
     public string AudioLanguage = "";
     public double AudioDelay;
+    /// <summary>When a file ends, the next one of its series or its playlist starts by itself.</summary>
+    public bool AutoNext = true;
+}
+
+internal sealed class QueueItem
+{
+    /// <summary>What to call it in the list: its name without what it shares with its neighbours.</summary>
+    public string Label = "";
+    public string Name = "";
+}
+
+internal sealed class QueueInfo
+{
+    /// <summary>"folder" or "playlist".</summary>
+    public string Kind = "folder";
+    /// <summary>The folder's name or the playlist's; empty for a list not saved yet.</summary>
+    public string Name = "";
+    /// <summary>A playlist changed since it was read or saved.</summary>
+    public bool Unsaved;
+    public int? Current;
+    /// <summary>Whether the next file starts by itself when this one ends.</summary>
+    public bool Continues;
+    public List<QueueItem> Items = new();
+
+    public bool IsPlaylist => Kind == "playlist";
+    public bool HasNext => (Current ?? Items.Count) + 1 < Items.Count;
+    public bool HasPrevious => (Current ?? 0) > 0;
+
+    /// <summary>Everything the list's panel shows, as one text: it is drawn again when this changes.</summary>
+    public string Shown =>
+        $"{Kind}|{Name}|{Unsaved}|{Current}|{Continues}|" + string.Join("|", Items.Select(i => i.Name));
 }
