@@ -207,7 +207,38 @@ func write(_ image: CGImage, to path: String) {
     try! png(image).write(to: URL(fileURLWithPath: path))
 }
 
-/// A Windows icon file: a list of the sizes inside, then each as a PNG.
+/// A picture the way Windows icon files have always held them: a bitmap header, the pixels as
+/// blue, green, red and opacity from the bottom row up, then a one-bit mask (left empty: the
+/// opacity says it all). Every program on Windows reads this; a PNG inside an icon file is read
+/// reliably only at the largest size.
+func bitmap(_ image: CGImage) -> Data {
+    let side = image.width
+    var pixels = [UInt8](repeating: 0, count: side * side * 4)
+    let context = CGContext(
+        data: &pixels, width: side, height: side, bitsPerComponent: 8, bytesPerRow: side * 4, space: space,
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    context.draw(image, in: CGRect(x: 0, y: 0, width: side, height: side))
+
+    func bytes<T: FixedWidthInteger>(_ value: T) -> Data {
+        withUnsafeBytes(of: value.littleEndian) { Data($0) }
+    }
+    // The header gives twice the height: the pixels and the mask are counted together.
+    var data = bytes(UInt32(40)) + bytes(Int32(side)) + bytes(Int32(side * 2)) + bytes(UInt16(1)) + bytes(UInt16(32))
+    data += Data(count: 24)
+    for row in (0..<side).reversed() {
+        for column in 0..<side {
+            let i = (row * side + column) * 4
+            let alpha = Int(pixels[i + 3])
+            // Stored with colour and opacity apart; drawn here with them multiplied together.
+            let plain = { (c: UInt8) -> UInt8 in alpha == 0 ? 0 : UInt8(min(255, (Int(c) * 255 + alpha / 2) / alpha)) }
+            data.append(contentsOf: [plain(pixels[i + 2]), plain(pixels[i + 1]), plain(pixels[i]), UInt8(alpha)])
+        }
+    }
+    data += Data(count: ((side + 31) / 32) * 4 * side)
+    return data
+}
+
+/// A Windows icon file: a list of the sizes inside, then each picture.
 func icon(_ pictures: [(pixels: Int, data: Data)]) -> Data {
     func bytes<T: FixedWidthInteger>(_ value: T) -> Data {
         withUnsafeBytes(of: value.littleEndian) { Data($0) }
@@ -234,7 +265,10 @@ if output.hasSuffix(".iconset") {
     }
 } else if output.hasSuffix(".ico") {
     // The sizes Explorer asks for at its usual scales; anything between is made from the largest.
-    let pictures = [16, 20, 24, 32, 40, 48, 64, 256].map { (pixels: $0, data: png(draw(pixels: $0, fill: 1.1))) }
+    let pictures = [16, 20, 24, 32, 40, 48, 64, 256].map { pixels -> (pixels: Int, data: Data) in
+        let image = draw(pixels: pixels, fill: 1.1)
+        return (pixels, pixels < 256 ? bitmap(image) : png(image))
+    }
     try! icon(pictures).write(to: URL(fileURLWithPath: output))
 } else {
     write(draw(pixels: 1024), to: output)

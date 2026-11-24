@@ -256,18 +256,22 @@ jobs:
           "Opened with: " + (Get-ItemProperty 'HKCU:\Software\Classes\BitSpringVideo.MKV\shell\open\command').'(default)'
           "Default apps: " + (Get-ItemProperty 'HKCU:\Software\RegisteredApplications').'BitSpring Video'
 
-          # The pictures as Windows itself draws them, every size in the file, for the eye.
+          # The pictures as Windows itself loads and draws them, every size in the file, for the eye.
           try {
             Add-Type -AssemblyName System.Drawing
-            $sizes = 256, 64, 48, 32, 24, 16
-            $sheet = New-Object System.Drawing.Bitmap 1100, 300
+            Add-Type -Namespace Shell -Name Icons -MemberDefinition '[DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern uint PrivateExtractIcons(string file, int index, int width, int height, IntPtr[] icons, uint[] ids, uint count, uint flags);'
+            $sizes = 256, 64, 48, 40, 32, 24, 20, 16
+            $sheet = New-Object System.Drawing.Bitmap 1300, 300
             $graphics = [System.Drawing.Graphics]::FromImage($sheet)
             $graphics.Clear([System.Drawing.Color]::FromArgb(243, 243, 243))
             $x = 20
             foreach ($file in 'Document-MKV.ico', 'Document.ico') {
               foreach ($size in $sizes) {
-                $icon = New-Object System.Drawing.Icon "$here\BitSpring-Video-windows\Assets\$file", $size, $size
-                $graphics.DrawImage($icon.ToBitmap(), $x, 280 - $size)
+                $handles = New-Object IntPtr[] 1
+                $found = [Shell.Icons]::PrivateExtractIcons("$here\BitSpring-Video-windows\Assets\$file", 0, $size, $size, $handles, $null, 1, 0)
+                if ($found -lt 1 -or $handles[0] -eq [IntPtr]::Zero) { throw "Windows found no picture of $size in $file" }
+                $icon = [System.Drawing.Icon]::FromHandle($handles[0])
+                $graphics.DrawIcon($icon, (New-Object System.Drawing.Rectangle $x, (280 - $size), $size, $size))
                 $x += $size + 16
               }
               $x += 40

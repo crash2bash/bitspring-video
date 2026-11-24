@@ -27,6 +27,7 @@ public sealed partial class MainWindow : Window
     private readonly Player player;
     private readonly Launch launch;
     private readonly DispatcherTimer tick = new() { Interval = TimeSpan.FromMilliseconds(100) };
+    private bool closed;
 
     /// <summary>The colour of what is playing: brass, violet, or porcelain until it is known.</summary>
     private readonly SolidColorBrush live = new(Porcelain);
@@ -134,6 +135,7 @@ public sealed partial class MainWindow : Window
         tick.Start();
         Closed += (_, _) =>
         {
+            closed = true;
             tick.Stop();
             player.Dispose();
         };
@@ -189,6 +191,8 @@ public sealed partial class MainWindow : Window
 
     private void OnTick()
     {
+        // A tick already on its way when the window closed still arrives, with no player to ask.
+        if (closed) return;
         var window = WinRT.Interop.WindowNative.GetWindowHandle(this);
         player.SetWindow(Native.MonitorFromWindow(window, 2 /* nearest */), IsFullscreen);
 
