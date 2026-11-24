@@ -184,9 +184,41 @@ fn unescape(text: &str) -> String {
 /// of the names Windows reaches devices and shares by ("\\?\UNC\server\films"). Only asking
 /// whether such a file exists already makes a connection, and signs in to whoever answers.
 fn leads_elsewhere(path: &str) -> bool {
-    let mut letters = path.chars();
-    let mut separator = || matches!(letters.next(), Some('/' | '\\'));
-    separator() && separator()
+    let bytes = path.as_bytes();
+    let separator = |at: usize| matches!(bytes.get(at), Some(b'/' | b'\\'));
+    if !(separator(0) && separator(1)) {
+        return false;
+    }
+    // "\\?\C:\films" is the long way of writing a path on a disk of this machine.
+    let on_a_disk = bytes.get(2) == Some(&b'?')
+        && separator(3)
+        && bytes.get(4).is_some_and(u8::is_ascii_alphabetic)
+        && bytes.get(5) == Some(&b':')
+        && separator(6);
+    !on_a_disk
+}
+
+/// Folders where a Mac mounts another machine's files the moment a name under them is asked for.
+const MOUNTED_ON_DEMAND: [&str; 4] = [
+    "/net",
+    "/Network",
+    "/System/Volumes/Data/net",
+    "/System/Volumes/Data/Network",
+];
+
+/// A path without its "." and "..", worked out from the names alone: nothing is looked up.
+fn tidy(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for part in path.components() {
+        match part {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 /// The files a playlist names, as written: lines that are not comments. Names of files on
@@ -221,11 +253,14 @@ pub fn parse_playlist(text: &str, folder: &Path) -> Vec<PathBuf> {
                 return None;
             }
             let path = PathBuf::from(path);
-            Some(if path.is_absolute() {
+            let path = tidy(&if path.is_absolute() {
                 path
             } else {
                 folder.join(path)
-            })
+            });
+            // Out of the playlist's own folder and into one that mounts other machines.
+            let mounts = MOUNTED_ON_DEMAND.iter().any(|m| path.starts_with(m));
+            (!mounts || path.starts_with(folder)).then_some(path)
         })
         .take(MOST_ITEMS)
         .collect()
@@ -858,6 +893,32 @@ mod tests {
                     file://localhost//server/share/g.mkv\nfile:///%5C%5Cserver/share/h.mkv\n/\\server/i.mkv\n\
                     here.mkv\n";
         assert_eq!(parse_playlist(text, folder), [folder.join("here.mkv")]);
+        // The long way of writing a path on a disk of this machine is not a way out of it.
+        assert!(!leads_elsewhere("\\\\?\\C:\\films\\a.mkv"));
+        assert!(leads_elsewhere(
+            "\\\\?\\GLOBALROOT\\Device\\Mup\\server\\a.mkv"
+        ));
+        assert!(!leads_elsewhere("\\films\\a.mkv"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_playlist_cannot_reach_folders_that_mount_other_machines() {
+        let text = "/net/server/a.mkv\n../net/server/b.mkv\nsub/../../Network/Servers/s/c.mkv\n\
+                    /System/Volumes/Data/net/server/d.mkv\n/network/e.mkv\nsub/./f.mkv\n../g.mkv\n";
+        assert_eq!(
+            parse_playlist(text, Path::new("/lists")),
+            [
+                PathBuf::from("/network/e.mkv"),
+                PathBuf::from("/lists/sub/f.mkv"),
+                PathBuf::from("/g.mkv"),
+            ]
+        );
+        // A playlist that is itself there may name what is beside it, and nothing further.
+        assert_eq!(
+            parse_playlist("a.mkv\n../other/b.mkv\n", Path::new("/net/server/films")),
+            [PathBuf::from("/net/server/films/a.mkv")]
+        );
     }
 
     #[test]
