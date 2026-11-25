@@ -200,6 +200,7 @@ pub fn in_between(state: crate::playback::InBetween, ms: f32) -> String {
         InBetween::On => format!(", a frame in between takes {ms:.1} ms"),
         InBetween::Unsuited => ", no frames in between for this video".into(),
         InBetween::TooSlow => ", frames in between given up as too slow".into(),
+        InBetween::Unavailable => ", frames in between cannot be made on this machine".into(),
     }
 }
 

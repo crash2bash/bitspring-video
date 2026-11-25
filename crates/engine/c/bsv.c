@@ -1283,7 +1283,21 @@ struct bsv_between {
     void *maker;
 };
 
-bsv_between *bsv_between_open(int method, int width, int height, char *error, int error_len)
+int bsv_between_built(int method)
+{
+#if defined(__APPLE__)
+    if (method == BSV_BETWEEN_SYSTEM)
+        return 1;
+#endif
+#if defined(BSV_HAVE_RIFE)
+    if (method == BSV_BETWEEN_NEURAL)
+        return 1;
+#endif
+    return 0;
+}
+
+bsv_between *bsv_between_open(int method, int width, int height, const char *param, const void *model,
+                              size_t model_len, char *error, int error_len)
 {
     bsv_between *m = calloc(1, sizeof(*m));
     if (!m)
@@ -1295,6 +1309,11 @@ bsv_between *bsv_between_open(int method, int width, int height, char *error, in
 #if defined(__APPLE__)
     case BSV_BETWEEN_SYSTEM:
         m->maker = bsv_between_vt_open(width, height, error, error_len);
+        break;
+#endif
+#if defined(BSV_HAVE_RIFE)
+    case BSV_BETWEEN_NEURAL:
+        m->maker = bsv_between_rife_open(width, height, param, model, model_len, error, error_len);
         break;
 #endif
     default:
@@ -1314,6 +1333,10 @@ void bsv_between_close(bsv_between *m)
 #if defined(__APPLE__)
     if (m->method == BSV_BETWEEN_SYSTEM)
         bsv_between_vt_close(m->maker);
+#endif
+#if defined(BSV_HAVE_RIFE)
+    if (m->method == BSV_BETWEEN_NEURAL)
+        bsv_between_rife_close(m->maker);
 #endif
     free(m);
 }
@@ -1382,6 +1405,10 @@ int bsv_between_make(bsv_between *m, void *avframe_a, void *avframe_b, void **ou
 #if defined(__APPLE__)
         if (m->method == BSV_BETWEEN_SYSTEM)
             ret = bsv_between_vt_make(m->maker, a, b, made);
+#endif
+#if defined(BSV_HAVE_RIFE)
+        if (m->method == BSV_BETWEEN_NEURAL)
+            ret = bsv_between_rife_make(m->maker, a, b, made);
 #endif
     }
     if (ret < 0) {

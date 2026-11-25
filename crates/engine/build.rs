@@ -5,6 +5,9 @@ fn main() {
     println!("cargo:rerun-if-changed=c/bsv.h");
     println!("cargo:rerun-if-changed=c/between.h");
     println!("cargo:rerun-if-changed=c/between_vt.m");
+    println!("cargo:rerun-if-changed=c/between_rife.cpp");
+    println!("cargo:rerun-if-changed=rife");
+    println!("cargo:rustc-check-cfg=cfg(bsv_rife)");
     println!("cargo:rerun-if-env-changed=BSV_SKIP_NATIVE");
 
     // For type-checking the Rust side for a system whose libraries are not on this machine
@@ -28,7 +31,18 @@ fn main() {
         libraries.push("vulkan");
     }
 
+    // The neural network that makes frames in between runs through ncnn. A machine without
+    // that library builds a player without that one method.
+    let ncnn = pkg_config::Config::new()
+        .cargo_metadata(false)
+        .probe("ncnn")
+        .ok();
+    println!("cargo:rerun-if-env-changed=PKG_CONFIG_PATH");
+
     let mut build = cc::Build::new();
+    if ncnn.is_some() {
+        build.define("BSV_HAVE_RIFE", None);
+    }
     build
         .file("c/bsv.c")
         .include("c")
@@ -72,6 +86,36 @@ fn main() {
         for framework in ["VideoToolbox", "CoreVideo", "CoreMedia", "Foundation"] {
             println!("cargo:rustc-link-lib=framework={framework}");
         }
+    }
+
+    if let Some(ncnn) = &ncnn {
+        let mut rife = cc::Build::new();
+        rife.cpp(true)
+            .std("c++17")
+            .file("c/between_rife.cpp")
+            .file("rife/warp.cpp")
+            .include("c")
+            .include("rife")
+            .warnings(false);
+        for path in &ncnn.include_paths {
+            // ncnn's headers are used both as <ncnn/net.h> and, by the code that came with
+            // the model, as "net.h".
+            rife.include(path).include(path.join("ncnn"));
+        }
+        for lib in &libraries {
+            let found = pkg_config::Config::new()
+                .cargo_metadata(false)
+                .probe(lib)
+                .expect("probed a moment ago");
+            for path in &found.include_paths {
+                rife.include(path);
+            }
+        }
+        rife.compile("bsv_between_rife");
+        println!("cargo:rustc-cfg=bsv_rife");
+        pkg_config::Config::new()
+            .probe("ncnn")
+            .expect("probed a moment ago");
     }
 
     for lib in &libraries {

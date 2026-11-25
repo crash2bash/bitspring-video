@@ -163,7 +163,11 @@ enum bsv_between_result {
     BSV_BETWEEN_UNSUITED = -2, // not a kind of picture this maker takes (10-bit, full range, another size)
     BSV_BETWEEN_FAILED = -1,
 };
-bsv_between *bsv_between_open(int method, int width, int height, char *error, int error_len);
+// `param`, `model`: the neural network's model, for BSV_BETWEEN_NEURAL; NULL otherwise.
+bsv_between *bsv_between_open(int method, int width, int height, const char *param, const void *model,
+                              size_t model_len, char *error, int error_len);
+// Whether this build has the method at all.
+int bsv_between_built(int method);
 void bsv_between_close(bsv_between *m);
 // `*out` receives the new frame (for bsv_frame_free or a gpu) when the result is MADE. `*moved`
 // and `*relit` say how unlike the two pictures were found to be, which decides NONE.

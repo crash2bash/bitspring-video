@@ -42,7 +42,8 @@ struct SignalInfo: Codable, Equatable {
     var passthrough: Bool
     /// The picture on screen was doubled by the neural network before being fitted to the window.
     var upscaled: Bool
-    /// Frames in between: "off", "on", "unsuited" (not for this video), "slow" (given up).
+    /// Frames in between: "off", "on", "unsuited" (not for this video), "slow" (given up),
+    /// "unavailable" (the method does not run on this machine).
     var inBetween: String
 }
 

@@ -373,6 +373,9 @@ pub enum InBetween {
     /// Making one took longer than this machine has between two pictures: given up, so that
     /// the video itself keeps its pace.
     TooSlow = 3,
+    /// The method did not start on this machine at all: the neural network without a
+    /// graphics card that runs it.
+    Unavailable = 4,
 }
 
 /// State every thread reads: which seek is current, and whether to stop.
@@ -1306,7 +1309,14 @@ impl Smoother {
                 }
                 Ok(Err(e)) => {
                     self.opening = None;
-                    self.settle(InBetween::Unsuited, &e.to_string(), shared);
+                    // The system's maker turns down a size of picture; the neural network
+                    // takes any, and fails only where the machine cannot run it.
+                    let state = if self.asked == Interpolation::Neural as u8 {
+                        InBetween::Unavailable
+                    } else {
+                        InBetween::Unsuited
+                    };
+                    self.settle(state, &e.to_string(), shared);
                 }
                 Err(TryRecvError::Empty) => {}
                 Err(TryRecvError::Disconnected) => self.opening = None,
@@ -2106,6 +2116,7 @@ fn render_loop(
             1 => InBetween::On,
             2 => InBetween::Unsuited,
             3 => InBetween::TooSlow,
+            4 => InBetween::Unavailable,
             _ => InBetween::Off,
         };
         s.in_between_ms = f32::from_bits(shared.in_between_ms.load(Ordering::Relaxed));

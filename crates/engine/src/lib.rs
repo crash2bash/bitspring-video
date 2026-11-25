@@ -232,12 +232,19 @@ pub enum Interpolation {
 impl Interpolation {
     /// Whether this program was built with the method at all.
     pub fn built(self) -> bool {
-        match self {
-            Interpolation::System => cfg!(target_os = "macos"),
-            Interpolation::Neural => false,
-        }
+        // SAFETY: a plain question with no state behind it.
+        unsafe { ffi::bsv_between_built(self as c_int) != 0 }
     }
 }
+
+/// The neural network's model, built into the program where the method is (see `rife/`).
+#[cfg(bsv_rife)]
+const RIFE: (&[u8], &[u8]) = (
+    concat!(include_str!("../rife/rife-v4.6/flownet.param"), "\0").as_bytes(),
+    include_bytes!("../rife/rife-v4.6/flownet.bin"),
+);
+#[cfg(not(bsv_rife))]
+const RIFE: (&[u8], &[u8]) = (&[], &[]);
 
 /// What came of asking for the frame between two others.
 pub enum Between {
@@ -259,12 +266,21 @@ unsafe impl Send for Interpolator {}
 impl Interpolator {
     pub fn open(method: Interpolation, width: u32, height: u32) -> Result<Interpolator, Error> {
         let mut error = [0 as c_char; 256];
-        // SAFETY: the error buffer outlives the call.
+        let (param, model) = match method {
+            Interpolation::Neural if !RIFE.1.is_empty() => {
+                (RIFE.0.as_ptr() as *const c_char, RIFE.1)
+            }
+            _ => (std::ptr::null(), &[][..]),
+        };
+        // SAFETY: the error buffer outlives the call, and the model is there for good.
         let ptr = unsafe {
             ffi::bsv_between_open(
                 method as c_int,
                 width as c_int,
                 height as c_int,
+                param,
+                model.as_ptr() as *const c_void,
+                model.len(),
                 error.as_mut_ptr(),
                 error.len() as c_int,
             )

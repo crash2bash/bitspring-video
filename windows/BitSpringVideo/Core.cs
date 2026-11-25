@@ -236,7 +236,8 @@ internal sealed class SignalInfo
     public bool Passthrough;
     /// <summary>The picture on screen was doubled by the neural network before being fitted to the window.</summary>
     public bool Upscaled;
-    /// <summary>Frames in between: "off", "on", "unsuited" (not for this video), "slow" (given up).</summary>
+    /// <summary>Frames in between: "off", "on", "unsuited" (not for this video), "slow" (given up),
+    /// "unavailable" (the method does not run on this machine).</summary>
     public string InBetween = "off";
 }
 

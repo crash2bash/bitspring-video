@@ -2,6 +2,8 @@
 #ifndef BSV_BETWEEN_H
 #define BSV_BETWEEN_H
 
+#include <stddef.h>
+
 struct AVFrame;
 
 // The system's own (VideoToolbox, Apple systems). `a` and `b` are 8-bit 4:2:0 in video range,
@@ -10,5 +12,13 @@ struct AVFrame;
 void *bsv_between_vt_open(int width, int height, char *error, int error_len);
 void bsv_between_vt_close(void *maker);
 int bsv_between_vt_make(void *maker, const struct AVFrame *a, const struct AVFrame *b, struct AVFrame *out);
+
+// A neural network (RIFE through ncnn), where the build has it. `param` is the model's
+// description as text and `model` its numbers, both as that project's files hold them; the
+// maker copies what it needs. The pictures are as above.
+void *bsv_between_rife_open(int width, int height, const char *param, const void *model, size_t model_len,
+                            char *error, int error_len);
+void bsv_between_rife_close(void *maker);
+int bsv_between_rife_make(void *maker, const struct AVFrame *a, const struct AVFrame *b, struct AVFrame *out);
 
 #endif

@@ -245,6 +245,8 @@ public sealed partial class MainWindow
                     "Промежуточных кадров нет: только для 8-битного видео до 30 кадр/с"),
                 "slow" => L("Frames in between given up: this computer cannot make them in time",
                     "Промежуточные кадры отключены: этот компьютер не успевает их делать"),
+                "unavailable" => L("No frames in between: the neural network needs a graphics card with Vulkan",
+                    "Промежуточных кадров нет: нейросети нужна видеокарта с поддержкой Vulkan"),
                 _ => null,
             };
             if (motion != null) yield return (L("Motion", "Движение"), motion);
@@ -381,6 +383,7 @@ public sealed partial class MainWindow
         var decoder = new ToggleSwitch { IsOn = settings.HardwareDecoding, OnContent = "", OffContent = "", MinWidth = 0 };
         decoder.Toggled += (_, _) => Set("hardwareDecoding", decoder.IsOn ? "1" : "0");
 
+        var upscalingNote = Text(UpscalingNote(settings.Upscaling), 11, quiet: true);
         var picture = new List<UIElement>
         {
             peakRow, peakNote, useOwn,
@@ -391,11 +394,12 @@ public sealed partial class MainWindow
             Text(L("Upscaling", "Апскейлинг"), quiet: true),
             Choices(
                 new[] { ("off", L("Off", "Выкл")), ("faithful", L("Faithful", "Точный")), ("restoring", L("Restoring", "С очисткой")) },
-                settings.Upscaling, value => Set("upscaling", value)),
-            Text(
-                L("A neural network doubles a picture smaller than the window. Restoring also takes away what compression left.",
-                  "Нейросеть удваивает картинку, которая меньше окна. «С очисткой» заодно убирает следы сжатия."),
-                11, quiet: true),
+                settings.Upscaling, value =>
+                {
+                    Set("upscaling", value);
+                    upscalingNote.Text = UpscalingNote(value);
+                }),
+            upscalingNote,
         };
         // Only the ways of making frames in between that this build has; none, no row.
         if (settings.Interpolations.Count > 0)
@@ -404,11 +408,13 @@ public sealed partial class MainWindow
             presets.AddRange(settings.Interpolations.Select(
                 name => (name, name == "fast" ? L("Fast", "Быстрая") : L("Neural", "Нейросеть"))));
             picture.Add(Text(L("Motion", "Плавность"), quiet: true));
-            picture.Add(Choices(presets.ToArray(), settings.Interpolation, value => Set("interpolation", value)));
-            picture.Add(Text(
-                L("A frame is made between every two: 25 pictures a second become 50. For videos at up to 30 a second.",
-                  "Между каждыми двумя кадрами добавляется промежуточный: 25 кадров в секунду становятся 50. Для видео до 30 кадр/с."),
-                11, quiet: true));
+            var motionNote = Text(MotionNote(settings.Interpolation), 11, quiet: true);
+            picture.Add(Choices(presets.ToArray(), settings.Interpolation, value =>
+            {
+                Set("interpolation", value);
+                motionNote.Text = MotionNote(value);
+            }));
+            picture.Add(motionNote);
         }
         picture.Add(Row(L("The graphics card's video decoder", "Аппаратный декодер"), decoder,
             L("From the next file", "Со следующего файла")));
@@ -452,6 +458,34 @@ public sealed partial class MainWindow
             MaxHeight = Math.Max(240, Root.ActualHeight - 128),
         };
     }
+
+    /// <summary>One or two sentences for the upscaling preset that is on: what it does and what it is for.</summary>
+    private static string UpscalingNote(string preset) => preset switch
+    {
+        "faithful" => L(
+            "Faithful: a neural network doubles a picture smaller than the window and adds nothing of its own. For good sources.",
+            "Точный: нейросеть удваивает картинку, которая меньше окна, и ничего не добавляет от себя. Для хороших источников."),
+        "restoring" => L(
+            "Restoring: doubles the picture and takes away noise and what compression left. For weak sources.",
+            "С очисткой: удваивает картинку и заодно убирает шум и следы сжатия. Для слабых источников."),
+        _ => L(
+            "A neural network can double a picture before it is fitted to the screen. It works when the window is at least 1.3 times the picture's size.",
+            "Нейросеть может удваивать картинку перед подгонкой под экран. Работает, когда окно больше картинки хотя бы в 1,3 раза."),
+    };
+
+    /// <summary>The same for the way frames in between are made.</summary>
+    private static string MotionNote(string preset) => preset switch
+    {
+        "fast" => L(
+            "Fast: the system itself makes a frame between every two, so 25 a second become 50. For 8-bit video up to 1080p and 30 a second.",
+            "Быстрая: система сама делает кадр между каждыми двумя, и 25 кадров в секунду становятся 50. Для 8-битного видео до 1080p и 30 кадр/с."),
+        "neural" => L(
+            "Neural: a neural network (RIFE) makes a frame between every two, so 25 a second become 50. 8-bit video of any size at up to 30 a second, but heavy: when the graphics card cannot keep up, frames stop being added and the signal panel says so.",
+            "Нейросеть (RIFE) делает кадр между каждыми двумя, и 25 кадров в секунду становятся 50. Подходит 8-битное видео любого размера до 30 кадр/с, но это тяжело: если видеокарта не успевает, кадры перестают добавляться, и панель сигнала об этом скажет."),
+        _ => L(
+            "A frame can be made between every two: 25 pictures a second become 50. For videos at up to 30 a second.",
+            "Между каждыми двумя кадрами можно добавлять промежуточный: 25 кадров в секунду становятся 50. Для видео до 30 кадр/с."),
+    };
 
     /// <summary>A list of languages, with one more choice at the top for "no preference".</summary>
     private static ComboBox LanguageBox(string none, string selected, Action<string> chosen)

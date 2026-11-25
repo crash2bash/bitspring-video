@@ -219,9 +219,13 @@ unsafe extern "C" {
         method: c_int,
         width: c_int,
         height: c_int,
+        param: *const c_char,
+        model: *const c_void,
+        model_len: usize,
         error: *mut c_char,
         error_len: c_int,
     ) -> *mut bsv_between;
+    pub fn bsv_between_built(method: c_int) -> c_int;
     pub fn bsv_between_close(m: *mut bsv_between);
     pub fn bsv_between_make(
         m: *mut bsv_between,

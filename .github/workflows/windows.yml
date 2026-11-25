@@ -49,11 +49,42 @@ jobs:
             mingw-w64-ucrt-x86_64-libplacebo
             mingw-w64-ucrt-x86_64-libass
             mingw-w64-ucrt-x86_64-ntldd
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-vulkan-headers
+            mingw-w64-ucrt-x86_64-vulkan-loader
+            mingw-w64-ucrt-x86_64-glslang
+            mingw-w64-ucrt-x86_64-spirv-tools
+            git
+
+      # The neural network that makes frames in between runs through ncnn, which MSYS2 does
+      # not package: it is built here, once for each version, and kept between runs.
+      - uses: actions/cache@v4
+        id: ncnn
+        with:
+          path: ncnn-built
+          key: ncnn-20261020-ucrt64-1
+
+      - name: Build ncnn
+        if: steps.ncnn.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch 20261020 https://github.com/Tencent/ncnn.git ncnn-source
+          cmake -S ncnn-source -B ncnn-source/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$PWD/ncnn-built" -DNCNN_SHARED_LIB=ON -DNCNN_VULKAN=ON \
+            -DNCNN_SYSTEM_GLSLANG=ON -DNCNN_BUILD_TOOLS=OFF -DNCNN_BUILD_EXAMPLES=OFF \
+            -DNCNN_BUILD_BENCHMARK=OFF -DNCNN_BUILD_TESTS=OFF
+          cmake --build ncnn-source/build
+          cmake --install ncnn-source/build
+
+      - name: Put ncnn where the rest of the libraries are
+        run: |
+          cp -r ncnn-built/. /ucrt64/
+          pkg-config --modversion ncnn
 
       - name: Versions
         run: |
           rustc --version
-          pkg-config --modversion libplacebo libavcodec libass
+          pkg-config --modversion libplacebo libavcodec libass ncnn
 
       - name: Build
         run: cargo build --release -p bitspring-video -p bsv-winhost
@@ -251,6 +282,15 @@ jobs:
           # In software that takes a while; the clip waits at its first picture meanwhile.
           '{"quality":"fast","upscaling":"faithful"}' | Set-Content "$here\shots\settings.json"
           Photograph "9-upscaled" 60 @("$here\clip\series\Show-02.mkv", "--show", "signal")
+
+          # The same episode with frames in between asked of the neural network. This machine
+          # has no graphics card to run it on: what is checked is that the player says so in
+          # its signal panel and plays on, and that the network's library loads at all.
+          '{"quality":"fast","interpolation":"neural"}' | Set-Content "$here\shots\settings.json"
+          Photograph "10-motion" 25 @("$here\clip\series\Show-02.mkv", "--show", "signal")
+          if (-not (Test-Path "$here\BitSpring-Video-windows\libncnn.dll")) {
+            throw "The neural network's library is not in the folder"
+          }
 
           # A "Signal" line is written once a frame has gone through the renderer to the panel.
           if (-not (Select-String -Path "$here\shots\9-upscaled.log" -Pattern '^Signal:.*doubled by the neural upscaler' -Quiet)) {

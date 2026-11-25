@@ -92,9 +92,7 @@ private struct SettingsPanel: View {
                         onSelect: { model.set("upscaling", $0) })
                         .frame(width: 236)
                 }
-                Text(L(
-                    "A neural network doubles a picture smaller than the window. Restoring also takes away what compression left.",
-                    "Нейросеть удваивает картинку, которая меньше окна. «С очисткой» заодно убирает следы сжатия."))
+                Text(upscalingNote)
                     .font(.system(size: 11))
                     .foregroundStyle(Color.quiet)
                     .fixedSize(horizontal: false, vertical: true)
@@ -109,9 +107,7 @@ private struct SettingsPanel: View {
                             onSelect: { model.set("interpolation", $0) })
                             .frame(width: 236)
                     }
-                    Text(L(
-                        "A frame is made between every two: 25 pictures a second become 50. For videos at up to 30 a second.",
-                        "Между каждыми двумя кадрами добавляется промежуточный: 25 кадров в секунду становятся 50. Для видео до 30 кадр/с."))
+                    Text(motionNote)
                         .font(.system(size: 11))
                         .foregroundStyle(Color.quiet)
                         .fixedSize(horizontal: false, vertical: true)
@@ -180,6 +176,43 @@ private struct SettingsPanel: View {
             }
         }
         .padding(16)
+    }
+
+    // MARK: What the chosen preset does
+
+    /// One or two sentences for the preset that is on: what it does and what it is for.
+    private var upscalingNote: String {
+        switch settings.upscaling {
+        case "faithful":
+            return L(
+                "Faithful: a neural network doubles a picture smaller than the window and adds nothing of its own. For good sources.",
+                "Точный: нейросеть удваивает картинку, которая меньше окна, и ничего не добавляет от себя. Для хороших источников.")
+        case "restoring":
+            return L(
+                "Restoring: doubles the picture and takes away noise and what compression left. For weak sources.",
+                "С очисткой: удваивает картинку и заодно убирает шум и следы сжатия. Для слабых источников.")
+        default:
+            return L(
+                "A neural network can double a picture before it is fitted to the screen. It works when the window is at least 1.3 times the picture's size.",
+                "Нейросеть может удваивать картинку перед подгонкой под экран. Работает, когда окно больше картинки хотя бы в 1,3 раза.")
+        }
+    }
+
+    private var motionNote: String {
+        switch settings.interpolation {
+        case "fast":
+            return L(
+                "Fast: macOS itself makes a frame between every two, so 25 a second become 50. For 8-bit video up to 1080p and 30 a second.",
+                "Быстрая: macOS сама делает кадр между каждыми двумя, и 25 кадров в секунду становятся 50. Для 8-битного видео до 1080p и 30 кадр/с.")
+        case "neural":
+            return L(
+                "Neural: a neural network (RIFE) makes the frames. 8-bit video of any size, but heavy: when the graphics card cannot keep up, frames stop being added and the signal panel says so.",
+                "Нейросеть (RIFE) делает кадры сама. Подходит 8-битное видео любого размера, но это тяжело: если видеокарта не успевает, кадры перестают добавляться, и панель сигнала об этом скажет.")
+        default:
+            return L(
+                "A frame can be made between every two: 25 pictures a second become 50. For videos at up to 30 a second.",
+                "Между каждыми двумя кадрами можно добавлять промежуточный: 25 кадров в секунду становятся 50. Для видео до 30 кадр/с.")
+        }
     }
 
     // MARK: The display's peak

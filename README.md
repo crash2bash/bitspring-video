@@ -49,8 +49,10 @@ Early. What works today, on the Mac:
   there, either as it is or with what compression left taken away. The signal panel says when
   it is at work. Tried on SDR and HDR10 at 1080p
 - Frames in between, off until switched on in settings: a video at up to 30 pictures a second
-  gets one made between every two (25 become 50), by the system (VideoToolbox) on the Mac,
-  for 8-bit pictures up to 1920x1080. Nothing is made across a cut, and it is given up for
+  gets one made between every two (25 become 50). Two ways to choose from: the system's
+  (VideoToolbox, the Mac only; 8-bit pictures up to 1920x1080, about 15 ms each), and a
+  neural network (RIFE through ncnn; 8-bit pictures of any size, heavier: 17 ms at 960x540
+  and 51 ms at 1920x1080 on an M4 Max). Nothing is made across a cut, and it is given up for
   a video the machine cannot make them in time for. The signal panel says which
 - Pause, seeking, volume, full screen; the display and the machine stay awake while a film
   plays, and are let go on pause
@@ -96,7 +98,8 @@ the signal panel offers the choice, and it is remembered.
   policy that picks the output signal. Pure Rust, tested.
 - `crates/engine`: decoding (FFmpeg) and rendering (libplacebo over Vulkan; MoltenVK on the Mac).
   A small C bridge in `c/`, a safe Rust API on top. `shaders/artcnn` holds the upscaler's
-  shaders as they are in ArtCNN at commit 0837e53, with its licence (MIT) beside them.
+  shaders as they are in ArtCNN at commit 0837e53, with its licence (MIT) beside them; `rife`
+  holds the model that makes frames in between and the one layer of it ncnn lacks (MIT).
 - `crates/audio`: sound output and the playback clock.
 - `crates/player`: the window and the playback threads. A library as well as a program, so
   that the Windows application can carry the same player. `queue.rs` is what plays after what
@@ -119,9 +122,12 @@ the signal panel offers the choice, and it is remembered.
 ## Building (Mac)
 
 ```
-brew install ffmpeg libplacebo libass molten-vk vulkan-loader pkgconf
+brew install ffmpeg libplacebo libass molten-vk vulkan-loader pkgconf ncnn
 cargo build --release
 ```
+
+ncnn is for the neural network that makes frames in between. Without it the player builds
+and runs just the same, less that one choice in its settings.
 
 To build the application itself, with its icon, its libraries inside and video files offered
 in Finder's "Open With":
@@ -144,6 +150,10 @@ pacman -S mingw-w64-ucrt-x86_64-{rust,gcc,pkgconf,ffmpeg,libplacebo,libass,ntldd
 cargo build --release -p bitspring-video -p bsv-winhost
 scripts/package-windows.sh     # the core and its libraries, in target/bundle
 ```
+
+For frames in between by the neural network the core also needs ncnn, which MSYS2 does not
+package: `.github/workflows/windows.yml` shows how it is built and put under `/ucrt64`
+beforehand. Without it the core builds and runs without that choice.
 
 And the application, with the [.NET 8 SDK](https://dotnet.microsoft.com/download):
 

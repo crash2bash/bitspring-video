@@ -549,6 +549,9 @@ private struct SignalPanel: View {
         case "slow":
             return L("Frames in between given up: this Mac cannot make them in time",
                      "Промежуточные кадры отключены: этот Mac не успевает их делать")
+        case "unavailable":
+            return L("No frames in between: the neural network did not start on this Mac",
+                     "Промежуточных кадров нет: нейросеть не запустилась на этом Mac")
         default:
             return nil
         }
