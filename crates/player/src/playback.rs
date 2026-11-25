@@ -1290,6 +1290,29 @@ fn video_loop(
 
 // ---- The render thread ----------------------------------------------------------------------
 
+/// Write the renderer's compiled shaders to their file, if any were compiled since `kept`
+/// was taken. The file is replaced whole, so that a run stopped half-way leaves the old one.
+fn keep_compiled(gpu: &Gpu, file: Option<&std::path::Path>, kept: &mut u64) {
+    let Some(file) = file else { return };
+    let mark = gpu.compiled_mark();
+    if mark == *kept {
+        return;
+    }
+    *kept = mark;
+    if let Some(folder) = file.parent() {
+        let _ = std::fs::create_dir_all(folder);
+    }
+    let unfinished = file.with_extension("cache.part");
+    let written = std::fs::write(&unfinished, gpu.compiled())
+        .and_then(|()| std::fs::rename(&unfinished, file));
+    if let Err(e) = written {
+        eprintln!(
+            "[warn] cannot keep the compiled shaders in {}: {e}",
+            file.display()
+        );
+    }
+}
+
 /// Loudness as heard is far from linear in amplitude: a squared control feels even.
 fn gain_for(volume: f32, muted: bool) -> f32 {
     if muted { 0.0 } else { volume * volume }
@@ -1325,7 +1348,7 @@ fn render_loop(
     {
         gpu.recall_compiled(&data);
     }
-    let compiled_before = gpu.compiled_mark();
+    let mut compiled_kept = gpu.compiled_mark();
     gpu.set_options(options.quality, &options.renderer_options)?;
     if let Err(e) = gpu.set_upscaler(options.upscaler) {
         eprintln!("[warn] {e}");
@@ -1817,6 +1840,10 @@ fn render_loop(
                 }
                 if gpu_peak.0.elapsed() >= Duration::from_secs(1) {
                     gpu_peak = (Instant::now(), gpu_peak.2, 0.0);
+                    // Not left for the end of the file: Direct3D takes twenty seconds over
+                    // the upscaler's shaders, and a player closed in a hurry would take them
+                    // again the next time.
+                    keep_compiled(&gpu, options.shader_cache.as_deref(), &mut compiled_kept);
                 }
                 drawn_for = moment;
                 over_at = None;
@@ -1898,19 +1925,7 @@ fn render_loop(
         s.subtitle_track = subtitle_track;
     }
 
-    if let Some(file) = &options.shader_cache
-        && gpu.compiled_mark() != compiled_before
-    {
-        if let Some(folder) = file.parent() {
-            let _ = std::fs::create_dir_all(folder);
-        }
-        if let Err(e) = std::fs::write(file, gpu.compiled()) {
-            eprintln!(
-                "[warn] cannot keep the compiled shaders in {}: {e}",
-                file.display()
-            );
-        }
-    }
+    keep_compiled(&gpu, options.shader_cache.as_deref(), &mut compiled_kept);
 
     shared.quit.store(true, Ordering::Relaxed);
     drop(frames);
