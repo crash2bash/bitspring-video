@@ -223,6 +223,8 @@ pub struct Player {
     /// Pictures taken apart from playback, on a thread of their own.
     stills: Option<Sender<StillJob>>,
     stills_thread: Option<JoinHandle<()>>,
+    /// The folder the small pictures are kept in, made for this player and removed with it.
+    thumbnails: Option<std::path::PathBuf>,
 }
 
 /// How the picture is placed in the window.
@@ -249,7 +251,12 @@ const THUMBNAIL_WIDTH: u32 = 320;
 /// The thread that takes pictures apart from playback. Small ones are made from the keyframe
 /// before the time asked for and kept in `folder` for as long as the file is open; only the
 /// latest one asked for is made, the pointer having moved on from the others.
-fn stills_loop(path: String, folder: std::path::PathBuf, jobs: Receiver<StillJob>, status: Arc<Mutex<Status>>) {
+fn stills_loop(
+    path: String,
+    folder: Option<std::path::PathBuf>,
+    jobs: Receiver<StillJob>,
+    status: Arc<Mutex<Status>>,
+) {
     let mut still: Option<Still> = None;
     let mut waiting: VecDeque<StillJob> = VecDeque::new();
     loop {
@@ -289,10 +296,10 @@ fn stills_loop(path: String, folder: std::path::PathBuf, jobs: Receiver<StillJob
         let still = still.as_mut().expect("opened");
         match job {
             StillJob::Thumbnail(at) => {
+                let Some(folder) = &folder else { continue };
                 let file = folder.join(format!("{}.png", (at * 10.0).round() as i64));
-                let made = file.exists()
-                    || std::fs::create_dir_all(&folder).is_ok()
-                        && still.save(at, Some(THUMBNAIL_WIDTH), false, &file).is_ok();
+                let made =
+                    file.exists() || still.save(at, Some(THUMBNAIL_WIDTH), false, &file).is_ok();
                 if made {
                     status.lock().unwrap().thumbnail = Some((at, file.to_string_lossy().into_owned()));
                 }
@@ -368,10 +375,11 @@ impl Player {
             ..Status::default()
         }));
         let (stills, jobs) = channel();
+        let thumbnails = thumbnail_folder();
         let stills_thread = {
             let path = options.path.clone();
             let status = status.clone();
-            let folder = thumbnail_folder();
+            let folder = thumbnails.clone();
             thread::Builder::new()
                 .name("stills".into())
                 .spawn(move || stills_loop(path, folder, jobs, status))
@@ -392,6 +400,7 @@ impl Player {
             thread: Some(thread),
             stills: Some(stills),
             stills_thread,
+            thumbnails,
         }
     }
 
@@ -435,14 +444,34 @@ impl Drop for Player {
         if let Some(thread) = self.stills_thread.take() {
             let _ = thread.join();
         }
-        let _ = std::fs::remove_dir_all(thumbnail_folder());
+        if let Some(folder) = self.thumbnails.take() {
+            let _ = std::fs::remove_dir_all(folder);
+        }
     }
 }
 
-/// Where the small pictures over the seek bar are kept while a file is open: a folder of this
-/// process's own among the system's temporary files.
-fn thumbnail_folder() -> std::path::PathBuf {
-    std::env::temp_dir().join(format!("bitspring-video-{}", std::process::id()))
+/// A new folder for the small pictures over the seek bar, among the system's temporary files:
+/// under a name nobody could have guessed and made beforehand, readable by this user alone.
+/// A folder that is there already is never used. `None` when none could be made: the seek
+/// bar then goes without pictures.
+fn thumbnail_folder() -> Option<std::path::PathBuf> {
+    use std::hash::{BuildHasher, Hasher};
+    for _ in 0..8 {
+        // Seeded afresh by the system for every hasher: as good as random for a name.
+        let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+        hasher.write_u32(std::process::id());
+        let name = format!("bitspring-video-{:016x}", hasher.finish());
+        let folder = std::env::temp_dir().join(name);
+        // Changed only where folders have Unix permissions.
+        #[allow(unused_mut)]
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        if builder.create(&folder).is_ok() {
+            return Some(folder);
+        }
+    }
+    None
 }
 
 // ---- Time -----------------------------------------------------------------------------------
