@@ -104,7 +104,10 @@ mod tests {
         let tidy_starts = |starts: &[f64], duration| -> Vec<f64> {
             tidy(at(starts), duration).iter().map(|c| c.start).collect()
         };
-        assert_eq!(tidy_starts(&[600.0, 0.0, 90.0, 90.2], 1200.0), [0.0, 90.0, 600.0]);
+        assert_eq!(
+            tidy_starts(&[600.0, 0.0, 90.0, 90.2], 1200.0),
+            [0.0, 90.0, 600.0]
+        );
         // A marker for the end itself is not a chapter one can watch.
         assert_eq!(tidy_starts(&[0.0, 600.0, 1199.8], 1200.0), [0.0, 600.0]);
         assert_eq!(tidy_starts(&[-0.04, 300.0], 1200.0), [0.0, 300.0]);

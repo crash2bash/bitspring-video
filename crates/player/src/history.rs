@@ -565,7 +565,11 @@ mod tests {
         let folder = scratch("recent");
         let settings = folder.join("quiet.json");
         let mut memory = Memory::beside(&settings);
-        for (name, contents) in [("first.mkv", "one film"), ("second.mkv", "another film"), ("gone.mkv", "a third")] {
+        for (name, contents) in [
+            ("first.mkv", "one film"),
+            ("second.mkv", "another film"),
+            ("gone.mkv", "a third"),
+        ] {
             let film = folder.join(name);
             std::fs::write(&film, contents).unwrap();
             memory.opened(film.to_str().unwrap());

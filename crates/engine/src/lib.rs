@@ -172,7 +172,11 @@ impl MediaInfo {
         MediaInfo {
             width: c.width.max(0) as u32,
             height: c.height.max(0) as u32,
-            pixel_aspect: if c.pixel_aspect > 0.0 { c.pixel_aspect } else { 1.0 },
+            pixel_aspect: if c.pixel_aspect > 0.0 {
+                c.pixel_aspect
+            } else {
+                1.0
+            },
             bit_depth: c.bit_depth.max(0) as u32,
             fps: c.fps,
             duration: c.duration,
@@ -894,7 +898,11 @@ impl Still {
                 error.len() as c_int,
             )
         };
-        if code == 0 { Ok(()) } else { Err(Error(text(&error))) }
+        if code == 0 {
+            Ok(())
+        } else {
+            Err(Error(text(&error)))
+        }
     }
 }
 
@@ -949,7 +957,9 @@ impl Tempo {
         // SAFETY: `samples` holds `frames` whole frames and outlives the call; they are copied.
         match unsafe { ffi::bsv_tempo_send(self.ptr.as_ptr(), samples.as_ptr(), frames) } {
             code if code >= 0 => Ok(()),
-            code => Err(Error(format!("the change of speed failed (FFmpeg error {code})"))),
+            code => Err(Error(format!(
+                "the change of speed failed (FFmpeg error {code})"
+            ))),
         }
     }
 
@@ -968,7 +978,9 @@ impl Tempo {
             1 if frames > 0 && !samples.is_null() => {
                 // SAFETY: the filter holds these samples until it is called again, which the
                 // returned borrow of `self` prevents.
-                Some(unsafe { std::slice::from_raw_parts(samples, frames as usize * self.channels) })
+                Some(unsafe {
+                    std::slice::from_raw_parts(samples, frames as usize * self.channels)
+                })
             }
             _ => None,
         }

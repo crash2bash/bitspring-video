@@ -323,7 +323,11 @@ unsafe extern "C" {
     pub fn bsv_gpu_subs_clear(g: *mut bsv_gpu);
     pub fn bsv_gpu_subs_set_delay(g: *mut bsv_gpu, seconds: c_double);
     pub fn bsv_gpu_set_picture(g: *mut bsv_gpu, shape: c_double, cut: c_double, fill: c_int);
-    pub fn bsv_still_open(path: *const c_char, error: *mut c_char, error_len: c_int) -> *mut bsv_still;
+    pub fn bsv_still_open(
+        path: *const c_char,
+        error: *mut c_char,
+        error_len: c_int,
+    ) -> *mut bsv_still;
     pub fn bsv_still_close(s: *mut bsv_still);
     pub fn bsv_still_save(
         s: *mut bsv_still,
@@ -344,7 +348,11 @@ unsafe extern "C" {
     ) -> *mut bsv_tempo;
     pub fn bsv_tempo_close(t: *mut bsv_tempo);
     pub fn bsv_tempo_send(t: *mut bsv_tempo, samples: *const f32, frames: c_int) -> c_int;
-    pub fn bsv_tempo_receive(t: *mut bsv_tempo, samples: *mut *const f32, frames: *mut c_int) -> c_int;
+    pub fn bsv_tempo_receive(
+        t: *mut bsv_tempo,
+        samples: *mut *const f32,
+        frames: *mut c_int,
+    ) -> c_int;
     pub fn bsv_gpu_subs_set_lift(g: *mut bsv_gpu, pixels: c_float);
     pub fn bsv_gpu_subs_set_look(g: *mut bsv_gpu, scale: c_float, nits: c_float);
     pub fn bsv_gpu_subs_push(g: *mut bsv_gpu, e: *mut bsv_sub_event);
