@@ -21,6 +21,7 @@ fn main() {
     let mut libraries = vec![
         "libass",
         "libplacebo",
+        "libavfilter",
         "libavformat",
         "libavcodec",
         "libswresample",

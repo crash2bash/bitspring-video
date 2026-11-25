@@ -31,7 +31,7 @@ use crate::sidecars::{self, Sidecar};
 use bsv_engine::{
     AudioDecoder, AudioInfo, Between, Chapter, Decoded, Frame, Gpu, Interpolation, Interpolator, MediaInfo,
     Packet, Pull, Quality, Read, RenderStats, RenderStatus, Source, SubtitleDecoder, SubtitleEvent,
-    SubtitleKind, Track, TrackKind, Upscaler, VideoDecoder,
+    SubtitleKind, Tempo, Track, TrackKind, Upscaler, VideoDecoder,
 };
 
 /// Decoded frames waiting for the renderer. A 4K 10-bit frame is about 25 MB.
@@ -39,6 +39,18 @@ const FRAMES_AHEAD: usize = 8;
 /// Compressed video kept ahead of the decoder, in seconds of content. It also bounds how far
 /// apart a file may store a moment's picture and its sound before one of them runs dry.
 const VIDEO_PACKETS_AHEAD: f64 = 1.5;
+/// The speeds playback can go at.
+pub const MIN_SPEED: f64 = 0.5;
+pub const MAX_SPEED: f64 = 2.0;
+/// The furthest subtitles can be moved either way, in seconds. Shown early, they have to be
+/// read that much ahead: at 4K a minute of video packets is a few hundred megabytes.
+pub const MAX_SUBTITLE_DELAY: f64 = 30.0;
+/// Sound made faster or slower is heard this much of the film early: the change of speed
+/// lays its pieces down where they fit best, a little ahead of where they belong. Measured
+/// with `scripts/sync-check.sh` (beep against flash, against -5 ms at normal speed): -36 ms at
+/// 0.5x, -20 at 0.75x, -10 at 1.25x and 1.5x, -9 at 2x, which is about this much of the
+/// film's time, heard at each speed.
+const TEMPO_LEAD: f64 = 0.012;
 /// Longest stretch of silence inserted when a sound track starts later than the picture.
 const MAX_LEADING_SILENCE: f64 = 10.0;
 /// Decoded sound the reading thread may hold beyond what the device's own buffer takes, in
@@ -70,6 +82,10 @@ pub struct Options {
     /// Seconds to hold the picture back against the sound: positive when the sound arrives
     /// late (a TV or receiver that delays it).
     pub audio_delay: f64,
+    /// How fast to play: 1 as made, 1.5 half as fast again. The sound keeps its pitch.
+    pub speed: f64,
+    /// Seconds subtitles are shown after the moment they are timed for (negative: before).
+    pub subtitle_delay: f64,
     /// 0.0 to 1.0.
     pub volume: f32,
     pub muted: bool,
@@ -128,6 +144,10 @@ pub enum Command {
     SetDolbyVision(bool),
     /// Seconds to hold the picture back against the sound.
     SetAudioDelay(f64),
+    /// Play this many times as fast (1 as made).
+    SetSpeed(f64),
+    /// Show subtitles this many seconds after the moment they are timed for (negative: before).
+    SetSubtitleDelay(f64),
     /// Show the subtitles of this file, which may be anywhere: it was opened by hand.
     AddSubtitles(String),
     /// Play the sound of this file with the picture; it too was opened by hand.
@@ -163,6 +183,10 @@ pub struct Status {
     /// 0.0 to 1.0.
     pub volume: f32,
     pub muted: bool,
+    /// How fast it plays, 1 as made.
+    pub speed: f64,
+    /// Seconds subtitles are shown late (negative: early).
+    pub subtitle_delay: f64,
     /// Gaps in the sound since the start: the device wanted samples that were not ready.
     pub underruns: u64,
     /// Whether frames in between are being made for this video, and what one takes to make,
@@ -232,6 +256,8 @@ impl Player {
             mode: options.mode,
             volume: options.volume,
             muted: options.muted,
+            speed: options.speed,
+            subtitle_delay: options.subtitle_delay,
             ..Status::default()
         }));
         let shared = status.clone();
@@ -274,13 +300,16 @@ impl Drop for Player {
 struct SystemClock {
     base: f64,
     running_since: Option<Instant>,
+    /// Seconds of media in each second that passes.
+    speed: f64,
 }
 
 impl SystemClock {
-    fn stopped_at(position: f64) -> SystemClock {
+    fn stopped_at(position: f64, speed: f64) -> SystemClock {
         SystemClock {
             base: position,
             running_since: None,
+            speed,
         }
     }
 
@@ -288,7 +317,7 @@ impl SystemClock {
         self.base
             + self
                 .running_since
-                .map_or(0.0, |t| t.elapsed().as_secs_f64())
+                .map_or(0.0, |t| t.elapsed().as_secs_f64() * self.speed)
     }
 
     fn stop(&mut self) {
@@ -312,6 +341,8 @@ struct Timeline {
     /// Time never runs behind this: the seek target, or the moment of the last pause.
     floor: f64,
     audio_delay: f64,
+    /// Seconds of media in each second that passes: the speed the sound was last set to.
+    speed: f64,
 }
 
 impl Timeline {
@@ -323,7 +354,7 @@ impl Timeline {
             // No reading yet means the sound for this position is still on its way.
             Some((clock, _)) => clock
                 .position()
-                .map_or(self.floor, |p| (p - self.audio_delay).max(self.floor)),
+                .map_or(self.floor, |p| (p - self.audio_delay * self.speed).max(self.floor)),
             None => self.system.position(),
         }
     }
@@ -348,7 +379,7 @@ impl Timeline {
     fn jump(&mut self, to: f64) {
         self.hold();
         self.floor = to;
-        self.system = SystemClock::stopped_at(to);
+        self.system = SystemClock::stopped_at(to, self.speed);
     }
 
     /// A sound device was opened after playback began (the video has no sound of its own,
@@ -390,9 +421,23 @@ struct Shared {
     /// What the video thread made of it: an [`InBetween`], and milliseconds as `f32` bits.
     in_between: AtomicU8,
     in_between_ms: AtomicU32,
+    /// How fast to play, as `f64` bits: the reading thread sets the sound to it after a jump.
+    speed: AtomicU64,
+    /// Seconds of video read ahead beyond the usual, as `f64` bits: subtitles shown early
+    /// have to have been read that much earlier.
+    read_ahead: AtomicU64,
 }
 
 impl Shared {
+    fn speed(&self) -> f64 {
+        f64::from_bits(self.speed.load(Ordering::Relaxed))
+    }
+
+    /// How much video, in seconds of content, is read ahead of the decoder.
+    fn packets_ahead(&self) -> f64 {
+        VIDEO_PACKETS_AHEAD + f64::from_bits(self.read_ahead.load(Ordering::Relaxed))
+    }
+
     /// Work started for `generation` is no longer wanted.
     fn stale(&self, generation: u64) -> bool {
         self.quit.load(Ordering::Relaxed) || self.generation.load(Ordering::Relaxed) != generation
@@ -435,14 +480,14 @@ impl PacketQueue {
         mut meanwhile: impl FnMut(),
     ) -> bool {
         let mut state = self.state.lock().unwrap();
-        while state.1 >= VIDEO_PACKETS_AHEAD {
+        while state.1 >= shared.packets_ahead() {
             if shared.stale(generation) {
                 return false;
             }
             drop(state);
             meanwhile();
             state = self.state.lock().unwrap();
-            if state.1 < VIDEO_PACKETS_AHEAD {
+            if state.1 < shared.packets_ahead() {
                 break;
             }
             state = self
@@ -559,6 +604,9 @@ struct SoundPath {
     ending: bool,
     /// The longest silence put before a track that begins after the picture, in seconds.
     most_silence: f64,
+    /// How fast the sound plays since the last flush; through `tempo` when not 1.
+    speed: f64,
+    tempo: Option<Tempo>,
 }
 
 impl SoundPath {
@@ -575,6 +623,8 @@ impl SoundPath {
             waiting: VecDeque::new(),
             ending: false,
             most_silence: MAX_LEADING_SILENCE,
+            speed: 1.0,
+            tempo: None,
         })
     }
 
@@ -587,22 +637,48 @@ impl SoundPath {
         }
     }
 
-    /// Forget everything not yet played: the step before sound from a new position.
-    fn flush(&mut self) {
+    /// Forget everything not yet played: the step before sound from a new position. From
+    /// there it plays at `speed`.
+    fn flush(&mut self, speed: f64) {
         self.decoder.flush();
         self.output.flush();
         self.silence = 0;
         self.waiting.clear();
         self.ending = false;
         self.based = false;
+        // A fresh one each time: what the last one held belongs to the old position.
+        self.tempo = None;
+        self.speed = 1.0;
+        if (speed - 1.0).abs() > 1e-3 {
+            let format = self.output.format();
+            match Tempo::open(format.sample_rate, format.channels, speed) {
+                Ok(tempo) => {
+                    self.tempo = Some(tempo);
+                    self.speed = speed;
+                }
+                Err(e) => eprintln!("[warn] the sound plays at its own speed: {e}"),
+            }
+        }
+    }
+
+    /// How far ahead of its time the sound is heard, in the film's seconds.
+    fn lead(&self) -> f64 {
+        if self.tempo.is_some() { TEMPO_LEAD } else { 0.0 }
     }
 
     /// The file has no more sound. If none came at all for where playback starts (the track
     /// is shorter than the picture), time starts there all the same and runs over silence.
     fn finish(&mut self, start: f64) {
         if !self.based {
-            self.output.set_base(start);
+            self.output.set_base(start + self.lead(), self.speed);
             self.based = true;
+        }
+        // What the change of speed still holds is the end of the sound.
+        if let Some(tempo) = &mut self.tempo {
+            tempo.finish();
+            while let Some(out) = tempo.receive() {
+                self.waiting.extend(out);
+            }
         }
         self.ending = true;
         self.settle();
@@ -613,6 +689,7 @@ impl SoundPath {
     fn pump(&mut self, start: f64, generation: u64, shared: &Shared) -> Result<(), String> {
         let rate = self.output.format().sample_rate as f64;
         let channels = self.output.format().channels as usize;
+        let lead = self.lead();
         loop {
             let samples = match self.decoder.receive().map_err(|e| e.to_string())? {
                 Decoded::Some(s) => s,
@@ -629,25 +706,44 @@ impl SoundPath {
                     let skip = (((start - samples.pts) * rate).round() as usize).min(frames);
                     data = &data[skip * channels..];
                 } else if samples.pts > start + 0.005 {
-                    // The track begins after the picture: fill the gap so both stay on one timeline.
-                    let gap = (samples.pts - start).min(self.most_silence);
+                    // The track begins after the picture: fill the gap so both stay on one
+                    // timeline. Played faster, the same stretch of film takes less silence.
+                    let gap = (samples.pts - start).min(self.most_silence) / self.speed;
                     self.silence = (gap * rate) as usize * channels;
-                    self.output.set_base(start);
+                    self.output.set_base(start + lead, self.speed);
                     self.based = true;
                 }
                 if !self.based {
-                    self.output.set_base(start.max(samples.pts));
+                    self.output.set_base(start.max(samples.pts) + lead, self.speed);
                     self.based = true;
                 }
             }
-            if !queue(
-                &mut self.output,
-                &mut self.silence,
-                &mut self.waiting,
-                data,
-                generation,
-                shared,
-            ) {
+            let queued = match &mut self.tempo {
+                None => queue(
+                    &mut self.output,
+                    &mut self.silence,
+                    &mut self.waiting,
+                    data,
+                    generation,
+                    shared,
+                ),
+                Some(tempo) => {
+                    tempo.send(data).map_err(|e| e.to_string())?;
+                    let mut all = true;
+                    while all && let Some(out) = tempo.receive() {
+                        all = queue(
+                            &mut self.output,
+                            &mut self.silence,
+                            &mut self.waiting,
+                            out,
+                            generation,
+                            shared,
+                        );
+                    }
+                    all
+                }
+            };
+            if !queued {
                 return Ok(());
             }
         }
@@ -1186,7 +1282,7 @@ fn read_loop(mut source: Source, reading: Reading) {
             // Sound is silenced first: once the video thread sees the flush, the device's clock
             // no longer reports the old position.
             if let Some(path) = &mut sound {
-                path.flush();
+                path.flush(shared.speed());
             }
             video.clear();
             video.push_control(Item::Flush { generation, to });
@@ -1641,6 +1737,8 @@ fn render_loop(
         interpolation: AtomicU8::new(options.interpolation.map_or(0, |i| i as u8)),
         in_between: AtomicU8::new(0),
         in_between_ms: AtomicU32::new(0),
+        speed: AtomicU64::new(1.0f64.to_bits()),
+        read_ahead: AtomicU64::new(0.0f64.to_bits()),
     });
     let packets = Arc::new(PacketQueue::new());
     let (reader_commands, reader_rx) = channel();
@@ -1684,10 +1782,11 @@ fn render_loop(
     }
     let mut timeline = Timeline {
         sound: setup.map(|s| (s.clock, s.controls)),
-        system: SystemClock::stopped_at(0.0),
+        system: SystemClock::stopped_at(0.0, 1.0),
         held: true,
         floor: 0.0,
         audio_delay: options.audio_delay,
+        speed: 1.0,
     };
 
     let mut mode = options.mode;
@@ -1715,6 +1814,16 @@ fn render_loop(
     if options.start > 0.0 {
         pending.push_back(Command::SeekBy(options.start));
     }
+    if options.speed != 1.0 {
+        pending.push_back(Command::SetSpeed(options.speed));
+    }
+    let mut speed = 1.0;
+    let mut subtitle_delay = 0.0;
+    if options.subtitle_delay != 0.0 {
+        pending.push_back(Command::SetSubtitleDelay(options.subtitle_delay));
+    }
+    // Picture subtitles are let go once they are over: shown later, they have to be read again.
+    let mut picture_subtitles = false;
     let mut sidecars_known = false;
     // Every subtitle file there is a track for, and those opened by hand before the search
     // for the ones near the video came back (their tracks are numbered after the found ones).
@@ -1826,6 +1935,29 @@ fn render_loop(
                     }
                 }
                 Ok(Command::SetAudioDelay(seconds)) => timeline.audio_delay = seconds,
+                Ok(Command::SetSpeed(wanted)) => {
+                    let wanted = wanted.clamp(MIN_SPEED, MAX_SPEED);
+                    if (wanted - speed).abs() > 1e-3 {
+                        speed = wanted;
+                        shared.speed.store(speed.to_bits(), Ordering::Relaxed);
+                        timeline.speed = speed;
+                        // The sound is made again from here at the new speed, and the clock
+                        // counts from here at it.
+                        jump = Some((timeline.position(), None, None));
+                    }
+                }
+                Ok(Command::SetSubtitleDelay(seconds)) => {
+                    let seconds = seconds.clamp(-MAX_SUBTITLE_DELAY, MAX_SUBTITLE_DELAY);
+                    let later = seconds > subtitle_delay;
+                    subtitle_delay = seconds;
+                    gpu.set_subtitle_delay(seconds);
+                    shared
+                        .read_ahead
+                        .store((-seconds).max(0.0).to_bits(), Ordering::Relaxed);
+                    if later && picture_subtitles {
+                        jump = Some((timeline.position(), None, None));
+                    }
+                }
                 Ok(Command::AddSubtitles(file)) if !sidecars_known => opened_early.push(file),
                 Ok(Command::AddSubtitles(file)) => {
                     let number = match sidecar_files.iter().position(|known| *known == file) {
@@ -1966,6 +2098,7 @@ fn render_loop(
                     generation: g,
                     kind,
                 } if g == generation => {
+                    picture_subtitles = matches!(kind, Some(SubtitleKind::Pictures));
                     gpu.begin_subtitles(kind.as_ref(), (info.width, info.height));
                 }
                 FromReader::Subtitle {
@@ -2033,9 +2166,10 @@ fn render_loop(
         // drawn is the one that belongs to that moment: it then meets its sound. Never an
         // earlier time than the last one, which the queue of frames could not go back to.
         let ahead = gpu.frames_in_line() as f64 * vsync;
-        let moment = (timeline.position() + ahead).max(drawn_for);
+        // In the film's own time, which runs `speed` times as fast as the display's.
+        let moment = (timeline.position() + ahead * speed).max(drawn_for);
         let asked = Instant::now();
-        match gpu.render(moment, vsync, &output, &mut pull) {
+        match gpu.render(moment, vsync * speed, &output, &mut pull) {
             Ok((RenderStatus::Shown, s)) => {
                 failures = 0;
                 stats = s;
@@ -2112,6 +2246,8 @@ fn render_loop(
         s.mode = mode;
         s.volume = volume;
         s.muted = muted;
+        s.speed = speed;
+        s.subtitle_delay = subtitle_delay;
         s.underruns = timeline
             .sound
             .as_ref()
@@ -2176,6 +2312,8 @@ mod tests {
             start: 0.0,
             sound: true,
             audio_delay: 0.0,
+            speed: 1.0,
+            subtitle_delay: 0.0,
             volume: 1.0,
             muted: false,
             subtitle_lift: 0.0,

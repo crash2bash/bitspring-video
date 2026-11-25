@@ -351,3 +351,9 @@ pub fn chapter(chapter: &bsv_engine::Chapter) -> String {
         format!("{at}  {}", chapter.title)
     }
 }
+
+/// "1.5", "0.75", "2": a figure with no trailing zeros.
+pub fn trimmed(value: f64) -> String {
+    let text = format!("{value:.2}");
+    text.trim_end_matches('0').trim_end_matches('.').to_string()
+}

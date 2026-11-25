@@ -139,6 +139,10 @@ internal sealed class PlayerState
     public double? ResumedFrom;
     public double Volume = 1;
     public bool Muted;
+    /// <summary>How fast it plays, 1 as made.</summary>
+    public double Speed = 1;
+    /// <summary>Seconds subtitles are shown late (negative: early).</summary>
+    public double SubtitleDelay;
     public bool Fullscreen;
     public string Mode = "auto";
     public VideoInfo? Video;

@@ -111,6 +111,21 @@
             </StackPanel>
         </Border>
 
+        <!-- What a key just changed, said for a moment in the same place. -->
+        <Border
+            x:Name="KeyNote"
+            Visibility="Collapsed"
+            HorizontalAlignment="Center"
+            VerticalAlignment="Bottom"
+            Margin="0,0,0,90"
+            Height="38"
+            Padding="16,0,16,0"
+            CornerRadius="19"
+            IsHitTestVisible="False"
+            Background="{StaticResource GlassBrush}">
+            <TextBlock x:Name="KeyNoteText" FontSize="13" VerticalAlignment="Center" Foreground="{StaticResource PorcelainBrush}" />
+        </Border>
+
         <Grid x:Name="Chrome" Visibility="Collapsed">
             <!-- What is playing, and where it stands among the others: "2 / 10" opens the list. -->
             <StackPanel
@@ -187,6 +202,7 @@
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
 
                     <!-- To the file before this one in the folder or the playlist, and the one after:
@@ -241,12 +257,16 @@
                     <Button x:Name="DurationButton" Grid.Column="5" Style="{StaticResource OnGlass}" Click="OnDurationClick" Padding="4,6">
                         <TextBlock x:Name="DurationText" MinWidth="44" FontSize="15" Foreground="{StaticResource QuietBrush}" />
                     </Button>
-                    <Button x:Name="MuteButton" Grid.Column="6" Style="{StaticResource OnGlass}" Click="OnMuteClick">
+                    <!-- The speed, as a figure beside the times: quiet at 1×, bright at any other. -->
+                    <Button x:Name="SpeedButton" Grid.Column="6" Style="{StaticResource OnGlass}" Padding="2,6" Margin="-6,0,0,0">
+                        <TextBlock x:Name="SpeedText" FontSize="15" Text="1×" />
+                    </Button>
+                    <Button x:Name="MuteButton" Grid.Column="7" Style="{StaticResource OnGlass}" Click="OnMuteClick">
                         <FontIcon x:Name="MuteGlyph" Glyph="&#xE767;" FontSize="15" />
                     </Button>
                     <Slider
                         x:Name="Volume"
-                        Grid.Column="7"
+                        Grid.Column="8"
                         Width="72"
                         Minimum="0"
                         Maximum="1"
@@ -256,7 +276,7 @@
                         IsThumbToolTipEnabled="False"
                         ValueChanged="OnVolumeChanged" />
                     <!-- A bar in three parts, as the seek bar is cut into chapters. -->
-                    <Button x:Name="ChaptersButton" Grid.Column="8" Style="{StaticResource OnGlass}" Visibility="Collapsed">
+                    <Button x:Name="ChaptersButton" Grid.Column="9" Style="{StaticResource OnGlass}" Visibility="Collapsed">
                         <Border Width="18" Height="12" BorderThickness="1.5" CornerRadius="3" BorderBrush="{StaticResource PorcelainBrush}">
                             <Grid>
                                 <Grid.ColumnDefinitions>
@@ -271,13 +291,13 @@
                             </Grid>
                         </Border>
                     </Button>
-                    <Button x:Name="SubtitlesButton" Grid.Column="9" Style="{StaticResource OnGlass}">
+                    <Button x:Name="SubtitlesButton" Grid.Column="10" Style="{StaticResource OnGlass}">
                         <FontIcon x:Name="SubtitlesGlyph" Glyph="&#xE7F0;" FontSize="15" />
                     </Button>
-                    <Button x:Name="SoundButton" Grid.Column="10" Style="{StaticResource OnGlass}">
+                    <Button x:Name="SoundButton" Grid.Column="11" Style="{StaticResource OnGlass}">
                         <FontIcon Glyph="&#xE8D6;" FontSize="15" />
                     </Button>
-                    <Button x:Name="FullscreenButton" Grid.Column="11" Style="{StaticResource OnGlass}" Click="OnFullscreenClick">
+                    <Button x:Name="FullscreenButton" Grid.Column="12" Style="{StaticResource OnGlass}" Click="OnFullscreenClick">
                         <FontIcon x:Name="FullscreenGlyph" Glyph="&#xE740;" FontSize="14" />
                     </Button>
                 </Grid>

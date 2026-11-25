@@ -17,6 +17,7 @@ pub mod prefs;
 pub mod queue;
 pub mod report;
 pub mod sidecars;
+pub mod steps;
 #[cfg(any(target_os = "macos", windows))]
 pub mod surface;
 #[cfg(any(target_os = "macos", windows))]

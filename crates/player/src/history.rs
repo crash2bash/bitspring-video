@@ -40,6 +40,9 @@ pub struct Remembered {
     /// The subtitle track chosen by hand, or `subtitles_off` when they were switched off.
     pub subtitle_track: Option<i32>,
     pub subtitles_off: bool,
+    /// Seconds its subtitles were moved later (negative: earlier) to meet the speech.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub subtitle_delay: f64,
     /// When it was last played, in seconds since 1970.
     pub updated: u64,
 }
@@ -60,6 +63,10 @@ impl Remembered {
             (None, false) => None,
         }
     }
+}
+
+fn is_zero(value: &f64) -> bool {
+    *value == 0.0
 }
 
 /// The last twentieth of a film (at least ten seconds, at most two minutes) is its credits:
@@ -111,6 +118,8 @@ pub struct Recalled {
     pub start: Option<f64>,
     pub audio_track: Option<i32>,
     pub subtitles: Option<Option<i32>>,
+    /// Seconds its subtitles were moved by.
+    pub subtitle_delay: f64,
     /// The sound file to play with it, by its place against the video: the one chosen for
     /// this file, or else for the last file played from its folder.
     pub sound_place: Option<String>,
@@ -221,6 +230,7 @@ impl Memory {
             start: entry.resume_point(),
             audio_track: entry.audio_track,
             subtitles: entry.subtitles(),
+            subtitle_delay: entry.subtitle_delay,
             sound_place: entry
                 .sound_place
                 .clone()
@@ -312,6 +322,17 @@ impl Memory {
             current.entry.subtitles_off = track.is_none();
             current.unsaved = true;
             self.write();
+        }
+    }
+
+    /// The subtitles were moved to meet the speech. Written with the position, not at once:
+    /// the key that moves them is pressed several times in a row.
+    pub fn moved_subtitles(&mut self, seconds: f64) {
+        if let Some(current) = &mut self.current
+            && current.entry.subtitle_delay != seconds
+        {
+            current.entry.subtitle_delay = seconds;
+            current.unsaved = true;
         }
     }
 
@@ -478,6 +499,7 @@ mod tests {
         memory.note(600.0, 1700.0, false, false);
         memory.chose_audio(2, None);
         memory.chose_subtitles(None);
+        memory.moved_subtitles(-1.5);
         memory.closed();
         assert!(folder.join("history.json").exists());
 
@@ -490,6 +512,7 @@ mod tests {
                 start: Some(597.0),
                 audio_track: Some(2),
                 subtitles: Some(None),
+                subtitle_delay: -1.5,
                 sound_place: None,
                 own_sound: true,
             }

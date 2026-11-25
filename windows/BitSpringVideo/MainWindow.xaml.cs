@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Data;
@@ -97,8 +98,9 @@ public sealed partial class MainWindow : Window
         Tip(DurationButton, L("Switch between length and time left", "Длительность или оставшееся время"));
         Tip(ChaptersButton, L("Chapters (Page Up, Page Down)", "Главы (Page Up, Page Down)"));
         // Drawn, not a glyph: it has no text of its own for a screen reader to say.
-        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(ChaptersButton, L("Chapters", "Главы"));
+        AutomationProperties.SetName(ChaptersButton, L("Chapters", "Главы"));
         Tip(SubtitlesButton, L("Subtitles", "Субтитры"));
+        Tip(SpeedButton, L("Speed ([ and ])", "Скорость ([ и ])"));
         Tip(SoundButton, L("Sound track", "Звуковая дорожка"));
 
         // The play key and the played part of the seek bar take the signal's colour.
@@ -134,10 +136,13 @@ public sealed partial class MainWindow : Window
         var soundMenu = new MenuFlyout();
         soundMenu.Opening += (_, _) => FillSoundMenu(soundMenu);
         SoundButton.Flyout = soundMenu;
+        var speedMenu = new MenuFlyout();
+        speedMenu.Opening += (_, _) => FillSpeedMenu(speedMenu);
+        SpeedButton.Flyout = speedMenu;
         var chaptersMenu = new MenuFlyout();
         chaptersMenu.Opening += (_, _) => FillChaptersMenu(chaptersMenu);
         ChaptersButton.Flyout = chaptersMenu;
-        foreach (var flyout in new FlyoutBase[] { signalFlyout, settingsFlyout, queueFlyout, subtitlesMenu, soundMenu, chaptersMenu })
+        foreach (var flyout in new FlyoutBase[] { signalFlyout, settingsFlyout, queueFlyout, subtitlesMenu, soundMenu, chaptersMenu, speedMenu })
         {
             flyout.Opened += (_, _) => flyoutsOpen++;
             flyout.Closed += (_, _) => flyoutsOpen = Math.Max(0, flyoutsOpen - 1);
@@ -253,6 +258,7 @@ public sealed partial class MainWindow : Window
             applied = state;
         }
         KeepOrHideControls();
+        if (KeyNote.Visibility == Visibility.Visible && DateTime.UtcNow > noteUntil) KeyNote.Visibility = Visibility.Collapsed;
         if (showWhenReady != null) ShowWhenReady();
     }
 
@@ -274,6 +280,12 @@ public sealed partial class MainWindow : Window
     {
         KeepAwake(s.IsPlaying);
         UpdateMediaKeys(s);
+        // Changed while the same file plays: by a key, a menu, the system's controls.
+        if (applied is PlayerState before && s.File != null && s.File == before.File)
+        {
+            if (s.Speed != before.Speed) Say(SpeedNote(s.Speed));
+            if (s.SubtitleDelay != before.SubtitleDelay) Say(SubtitleDelayNote(s.SubtitleDelay));
+        }
         var open = s.File != null;
         Empty.Visibility = open ? Visibility.Collapsed : Visibility.Visible;
         Chrome.Visibility = open ? Visibility.Visible : Visibility.Collapsed;
@@ -283,7 +295,8 @@ public sealed partial class MainWindow : Window
         EmptyDisplay.Foreground = s.Display.Hdr == "off" ? Resource("BrassBrush") : Resource("QuietBrush");
         EmptyError.Text = s.Error ?? "";
         EmptyError.Visibility = s.Error == null ? Visibility.Collapsed : Visibility.Visible;
-        ResumeNote.Visibility = open && s.ResumedFrom != null ? Visibility.Visible : Visibility.Collapsed;
+        ResumeNote.Visibility = open && s.ResumedFrom != null && KeyNote.Visibility != Visibility.Visible
+            ? Visibility.Visible : Visibility.Collapsed;
         if (s.ResumedFrom is double from)
             ResumeText.Text = L($"Picked up from {Clock(from)}", $"Продолжено с {Clock(from)}");
         if (!open) return;
@@ -332,6 +345,9 @@ public sealed partial class MainWindow : Window
         MuteGlyph.Glyph = s.Muted || s.Volume <= 0.001 ? "" : "";
         Tip(MuteButton, s.Muted ? L("Unmute", "Включить звук") : L("Mute", "Без звука"));
 
+        SpeedText.Text = SpeedName(s.Speed);
+        SpeedText.Foreground = s.Speed == 1 ? Resource("QuietBrush") : Resource("PorcelainBrush");
+        AutomationProperties.SetName(SpeedButton, SpeedNote(s.Speed));
         ChaptersButton.Visibility = s.Chapters.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         DrawChapterMarks(s);
         SubtitlesButton.Visibility = s.SubtitleTracks.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -519,6 +535,13 @@ public sealed partial class MainWindow : Window
         // Ctrl with an arrow, as it jumps a word in text, jumps a chapter here.
         Key(VirtualKey.Right, () => player.Send("chapter-next"), VirtualKeyModifiers.Control);
         Key(VirtualKey.Left, () => player.Send("chapter-previous"), VirtualKeyModifiers.Control);
+        Key((VirtualKey)219 /* [ */, () => player.Send("speed-by -0.25"));
+        Key((VirtualKey)221 /* ] */, () => player.Send("speed-by 0.25"));
+        Key(VirtualKey.Back, () => player.Send("speed 1"));
+        Key(VirtualKey.Z, () => player.Send("subtitle-delay-by -0.1"));
+        Key(VirtualKey.X, () => player.Send("subtitle-delay-by 0.1"));
+        Key(VirtualKey.Z, () => player.Send("subtitle-delay-by -1"), VirtualKeyModifiers.Shift);
+        Key(VirtualKey.X, () => player.Send("subtitle-delay-by 1"), VirtualKeyModifiers.Shift);
         Key(VirtualKey.N, () => player.Send("next"));
         Key(VirtualKey.P, () => player.Send("previous"));
         Key(VirtualKey.L, () => { if (state.Queue != null) queueFlyout.ShowAt(QueueButton); });
@@ -556,6 +579,42 @@ public sealed partial class MainWindow : Window
         menu.Items.Add(new MenuFlyoutSeparator());
         foreach (var track in state.SubtitleTracks)
             menu.Items.Add(Choice(SubtitleLabel(track), "subtitles", state.SubtitleTrack == track.Id, $"subtitle-track {track.Id}"));
+        // Moved to meet the speech when they come too early or too late.
+        if (state.SubtitleTrack == null) return;
+        menu.Items.Add(new MenuFlyoutSeparator());
+        menu.Items.Add(new MenuFlyoutItem { Text = SubtitleDelayNote(state.SubtitleDelay), IsEnabled = false });
+        menu.Items.Add(Action(L("Earlier by 0.1 s", "Раньше на 0.1 с"), "Z", "subtitle-delay-by -0.1"));
+        menu.Items.Add(Action(L("Later by 0.1 s", "Позже на 0.1 с"), "X", "subtitle-delay-by 0.1"));
+        if (state.SubtitleDelay != 0)
+            menu.Items.Add(Action(L("On time", "Без сдвига"), "", "subtitle-delay 0"));
+    }
+
+    private static readonly double[] Speeds = { 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2 };
+
+    private void FillSpeedMenu(MenuFlyout menu)
+    {
+        menu.Items.Clear();
+        foreach (var speed in Speeds)
+            menu.Items.Add(Choice(speed == 1 ? L("Normal", "Обычная") : SpeedName(speed), "speed", state.Speed == speed, "speed " + Number(speed)));
+    }
+
+    private MenuFlyoutItem Action(string text, string key, string command)
+    {
+        var item = new MenuFlyoutItem { Text = text, KeyboardAcceleratorTextOverride = key };
+        item.Click += (_, _) => player.Send(command);
+        return item;
+    }
+
+    // ---- A word about what a key just changed --------------------------------------------------
+
+    private DateTime noteUntil = DateTime.MinValue;
+
+    private void Say(string text)
+    {
+        KeyNoteText.Text = text;
+        KeyNote.Visibility = Visibility.Visible;
+        ResumeNote.Visibility = Visibility.Collapsed;
+        noteUntil = DateTime.UtcNow.AddSeconds(1.6);
     }
 
     private void FillSoundMenu(MenuFlyout menu)

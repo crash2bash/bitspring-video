@@ -159,6 +159,10 @@ struct Status: Codable, Equatable {
     var resumedFrom: Double?
     var volume: Double
     var muted: Bool
+    /// How fast it plays, 1 as made.
+    var speed: Double
+    /// Seconds subtitles are shown late (negative: early).
+    var subtitleDelay: Double
     var fullscreen: Bool
     /// "auto", "passthrough", "sdr".
     var mode: String
@@ -181,7 +185,7 @@ struct Status: Codable, Equatable {
     static let empty = Status(
         file: nil, error: nil, position: 0, duration: 0, paused: false, ended: false,
         resumedFrom: nil, volume: 1,
-        muted: false, fullscreen: false, mode: "auto", video: nil, signal: nil, sound: nil,
+        muted: false, speed: 1, subtitleDelay: 0, fullscreen: false, mode: "auto", video: nil, signal: nil, sound: nil,
         audioTracks: [], subtitleTracks: [], audioTrack: nil, subtitleTrack: nil,
         chapters: [], chapter: nil,
         display: DisplayInfo(name: "", hdr: "unsupported", peak: 0, min: nil, headroom: 1, peakKnown: false),
@@ -312,8 +316,25 @@ final class PlayerModel: ObservableObject {
     /// Where the seek bar should stand: the requested position until playback gets there.
     var shownPosition: Double { seekTarget ?? status.position }
 
+    /// A line said for a moment above the controls: what a key just changed.
+    @Published var note: String?
+    private var noteTimer: Timer?
+
+    private func say(_ text: String) {
+        withAnimation(.smooth(duration: 0.25)) { note = text }
+        noteTimer?.invalidate()
+        noteTimer = Timer.scheduledTimer(withTimeInterval: 1.6, repeats: false) { [weak self] _ in
+            Task { @MainActor in withAnimation(.smooth(duration: 0.4)) { self?.note = nil } }
+        }
+    }
+
     func update(_ new: Status) {
         if let target = seekTarget, abs(new.position - target) < 1.0 { seekTarget = nil }
+        // Changed while the same file plays: by a key, a menu, the system's controls.
+        if new.file != nil, new.file == status.file {
+            if new.speed != status.speed { say(speedNote(new.speed)) }
+            if new.subtitleDelay != status.subtitleDelay { say(subtitleDelayNote(new.subtitleDelay)) }
+        }
         let wasPlaying = isPlaying
         if new != status { status = new }
         if status.file == nil {

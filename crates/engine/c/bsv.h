@@ -191,6 +191,18 @@ int bsv_audio_send(bsv_audio *a, void *avpacket);
 int bsv_audio_receive(bsv_audio *a, const float **samples, int *frames, double *pts);
 void bsv_audio_flush(bsv_audio *a);
 
+// ---- Sound at another speed --------------------------------------------------------------
+
+// Interleaved 32-bit float in and out, at one rate and channel count, made `speed` times as
+// fast (0.5 to 4) without changing its pitch. What comes out lags what goes in by a few
+// tens of milliseconds; send 0 frames at the end to have the rest.
+typedef struct bsv_tempo bsv_tempo;
+bsv_tempo *bsv_tempo_open(int rate, int channels, double speed, char *error, int error_len);
+void bsv_tempo_close(bsv_tempo *t);
+int bsv_tempo_send(bsv_tempo *t, const float *samples, int frames);
+// 1: `*samples` holds `*frames` frames, valid until the next call. 0: wants more. 2: all out.
+int bsv_tempo_receive(bsv_tempo *t, const float **samples, int *frames);
+
 // ---- Rendering ------------------------------------------------------------------------------
 
 enum bsv_primaries { BSV_PRIM_BT709 = 1, BSV_PRIM_DISPLAY_P3 = 2, BSV_PRIM_BT2020 = 3 };
@@ -287,6 +299,8 @@ void bsv_gpu_subs_add_font(bsv_gpu *g, const char *name, const void *data, int l
 void bsv_gpu_subs_begin(bsv_gpu *g, int kind, const char *header, int header_len, int video_w, int video_h);
 // After a seek: forget the events received so far.
 void bsv_gpu_subs_clear(bsv_gpu *g);
+// Show each subtitle this many seconds after the moment it is timed for (negative: before).
+void bsv_gpu_subs_set_delay(bsv_gpu *g, double seconds);
 // scale: text size, 1 as styled. nits: how bright subtitle white is, 0 for the usual SDR white.
 void bsv_gpu_subs_set_look(bsv_gpu *g, float scale, float nits);
 // Keep subtitles above this many pixels at the bottom of the window (where the controls are).

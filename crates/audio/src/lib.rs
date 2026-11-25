@@ -58,6 +58,9 @@ struct Shared {
     /// Media time of frame zero as `f64` bits; meaningful only while `has_base`.
     base: AtomicU64,
     has_base: AtomicBool,
+    /// Seconds of media in each second of sound written since the base, as `f64` bits: more
+    /// than 1 when the sound was made faster.
+    speed: AtomicU64,
     /// Times the device asked for sound that had not arrived yet.
     underruns: AtomicU64,
 
@@ -117,6 +120,7 @@ impl Clock {
             return None;
         }
         let base = f64::from_bits(s.base.load(Ordering::Acquire));
+        let speed = f64::from_bits(s.speed.load(Ordering::Acquire));
         let a = s.anchor();
         let rate = s.rate as f64;
         let now = s.epoch.elapsed().as_nanos() as u64;
@@ -127,9 +131,9 @@ impl Clock {
             // Negative while the block is still on its way to the speakers.
             let since = (now as f64 - a.heard_at as f64) / 1e9;
             let heard = a.before as f64 / rate + since;
-            Some(base + heard.min(handed_over))
+            Some(base + heard.min(handed_over) * speed)
         } else {
-            Some(base + handed_over - a.latency as f64 / 1e9)
+            Some(base + (handed_over - a.latency as f64 / 1e9) * speed)
         }
     }
 
@@ -195,6 +199,7 @@ impl AudioOutput {
             gain: AtomicU32::new(1.0f32.to_bits()),
             base: AtomicU64::new(0),
             has_base: AtomicBool::new(false),
+            speed: AtomicU64::new(1.0f64.to_bits()),
             underruns: AtomicU64::new(0),
             sequence: AtomicU64::new(0),
             before: AtomicU64::new(0),
@@ -329,8 +334,11 @@ impl AudioOutput {
         }
     }
 
-    /// Declare the media time of the next sample written after a [`flush`](Self::flush).
-    pub fn set_base(&mut self, seconds: f64) {
+    /// Declare the media time of the next sample written after a [`flush`](Self::flush), and
+    /// how many seconds of media each second of the sound from there on holds (1 at normal
+    /// speed, 1.5 for sound made half as fast again).
+    pub fn set_base(&mut self, seconds: f64, speed: f64) {
+        self.shared.speed.store(speed.to_bits(), Ordering::Release);
         self.shared.base.store(seconds.to_bits(), Ordering::Release);
         self.shared.has_base.store(true, Ordering::Release);
     }

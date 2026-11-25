@@ -72,6 +72,21 @@ func trimmed(_ value: Double, places: Int = 3) -> String {
         .replacingOccurrences(of: "\\.?0+$", with: "", options: .regularExpression)
 }
 
+/// "1×", "1.25×".
+func speedName(_ speed: Double) -> String { trimmed(speed, places: 2) + "×" }
+
+func speedNote(_ speed: Double) -> String {
+    speed == 1 ? L("Normal speed", "Обычная скорость") : L("Speed \(speedName(speed))", "Скорость \(speedName(speed))")
+}
+
+/// "Subtitles 0.3 s later".
+func subtitleDelayNote(_ delay: Double) -> String {
+    let amount = trimmed(abs(delay), places: 1)
+    if delay > 0 { return L("Subtitles \(amount) s later", "Субтитры позже на \(amount) с") }
+    if delay < 0 { return L("Subtitles \(amount) s earlier", "Субтитры раньше на \(amount) с") }
+    return L("Subtitles on time", "Субтитры без сдвига")
+}
+
 func nits(_ value: Double) -> String {
     if value >= 10 { return String(format: "%.0f", value) }
     if value >= 0.1 { return trimmed(value, places: 2) }
@@ -206,7 +221,18 @@ struct PlayerOverlay: View {
 
             // The film was picked up where it was left: say so for a moment, and offer its
             // beginning. It stands just above the transport bar, whether or not that shows.
-            if let from = model.status.resumedFrom {
+            if let note = model.note {
+                // What a key just changed, in the same place.
+                Text(note)
+                    .font(.system(size: 13, weight: .medium))
+                    .padding(.horizontal, 16)
+                    .frame(height: 38)
+                    .glassEffect(playerGlass(), in: .capsule)
+                    .padding(.bottom, 22 + 56 + 12)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+            } else if let from = model.status.resumedFrom {
                 ResumeNote(from: from) { model.send("seek-to 0") }
                     .padding(.bottom, 22 + 56 + 12)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
@@ -800,6 +826,29 @@ private struct Transport: View {
             .buttonStyle(.plain)
             .help(L("Switch between length and time left", "Длительность или оставшееся время"))
 
+            // The speed, as a figure beside the times: quiet at 1×, bright at any other.
+            Menu {
+                Picker(L("Speed", "Скорость"), selection: speedChoice) {
+                    ForEach(Self.speeds, id: \.self) { speed in
+                        Text(speed == 1 ? L("Normal", "Обычная") : speedName(speed)).tag(speed)
+                    }
+                }
+                .pickerStyle(.inline)
+            } label: {
+                Text(speedName(status.speed))
+                    .font(.figures(15))
+                    .foregroundStyle(status.speed == 1 ? Color.quiet : Color.porcelain)
+                    .frame(minWidth: 30, minHeight: 40)
+                    .contentShape(Rectangle())
+            }
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .padding(.leading, -6)
+            .help(L("Speed ([ and ])", "Скорость ([ и ])"))
+            .accessibilityLabel(speedNote(status.speed))
+
             if status.sound != nil {
                 Button {
                     model.send("toggle-mute")
@@ -854,6 +903,20 @@ private struct Transport: View {
                         }
                     }
                     .pickerStyle(.inline)
+                    // Moved to meet the speech when they come too early or too late.
+                    if status.subtitleTrack != nil {
+                        Section(subtitleDelayNote(status.subtitleDelay)) {
+                            Button(L("Earlier by 0.1 s (Z)", "Раньше на 0.1 с (Z)")) {
+                                model.send("subtitle-delay-by -0.1")
+                            }
+                            Button(L("Later by 0.1 s (X)", "Позже на 0.1 с (X)")) {
+                                model.send("subtitle-delay-by 0.1")
+                            }
+                            if status.subtitleDelay != 0 {
+                                Button(L("On time", "Без сдвига")) { model.send("subtitle-delay 0") }
+                            }
+                        }
+                    }
                 } label: {
                     Image(systemName: status.subtitleTrack == nil ? "captions.bubble" : "captions.bubble.fill")
                         .font(.system(size: 14, weight: .medium))
@@ -925,6 +988,12 @@ private struct Transport: View {
         .opacity(possible ? 1 : 0.3)
         .help("\(name) (\(key))")
         .accessibilityLabel(name)
+    }
+
+    static let speeds: [Double] = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2]
+
+    private var speedChoice: Binding<Double> {
+        Binding(get: { status.speed }, set: { model.send("speed \($0)") })
     }
 
     /// The time under the pointer on the seek bar, and the chapter it falls in.

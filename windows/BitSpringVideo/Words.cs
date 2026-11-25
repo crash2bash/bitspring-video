@@ -46,6 +46,21 @@ internal static class Words
         return title.Length == 0 ? L($"Chapter {n + 1}", $"Глава {n + 1}") : title;
     }
 
+    /// <summary>"1×", "1.25×".</summary>
+    public static string SpeedName(double speed) => Trimmed(speed, 2) + "×";
+
+    public static string SpeedNote(double speed) =>
+        speed == 1 ? L("Normal speed", "Обычная скорость") : L($"Speed {SpeedName(speed)}", $"Скорость {SpeedName(speed)}");
+
+    /// <summary>"Subtitles 0.3 s later".</summary>
+    public static string SubtitleDelayNote(double delay)
+    {
+        var amount = Trimmed(Math.Abs(delay), 1);
+        if (delay > 0) return L($"Subtitles {amount} s later", $"Субтитры позже на {amount} с");
+        if (delay < 0) return L($"Subtitles {amount} s earlier", $"Субтитры раньше на {amount} с");
+        return L("Subtitles on time", "Субтитры без сдвига");
+    }
+
     public static string Kilohertz(int rate) => Trimmed(rate / 1000.0, 1) + L(" kHz", " кГц");
 
     /// <summary>Codec names the way they are written on a box, not the way FFmpeg spells them.</summary>

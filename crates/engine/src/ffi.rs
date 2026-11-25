@@ -19,6 +19,11 @@ pub struct bsv_audio {
 }
 
 #[repr(C)]
+pub struct bsv_tempo {
+    _opaque: [u8; 0],
+}
+
+#[repr(C)]
 pub struct bsv_between {
     _opaque: [u8; 0],
 }
@@ -309,6 +314,17 @@ unsafe extern "C" {
         video_h: c_int,
     );
     pub fn bsv_gpu_subs_clear(g: *mut bsv_gpu);
+    pub fn bsv_gpu_subs_set_delay(g: *mut bsv_gpu, seconds: c_double);
+    pub fn bsv_tempo_open(
+        rate: c_int,
+        channels: c_int,
+        speed: c_double,
+        error: *mut c_char,
+        error_len: c_int,
+    ) -> *mut bsv_tempo;
+    pub fn bsv_tempo_close(t: *mut bsv_tempo);
+    pub fn bsv_tempo_send(t: *mut bsv_tempo, samples: *const f32, frames: c_int) -> c_int;
+    pub fn bsv_tempo_receive(t: *mut bsv_tempo, samples: *mut *const f32, frames: *mut c_int) -> c_int;
     pub fn bsv_gpu_subs_set_lift(g: *mut bsv_gpu, pixels: c_float);
     pub fn bsv_gpu_subs_set_look(g: *mut bsv_gpu, scale: c_float, nits: c_float);
     pub fn bsv_gpu_subs_push(g: *mut bsv_gpu, e: *mut bsv_sub_event);

@@ -24,11 +24,12 @@ use winit::window::{Fullscreen, Theme, Window, WindowId};
 use crate::history::{Memory, ResumeNote};
 use crate::launch::Settings;
 
-use crate::playback::{Command, Options, Player};
+use crate::playback::{self, Command, Options, Player};
 use crate::prefs::Preferences;
 use crate::queue::{Arrived, Queue};
 use crate::report;
 use crate::sidecars;
+use crate::steps;
 use crate::surface::Surface;
 use crate::ui::{self, Interface, Playing, Request, State, View};
 
@@ -52,7 +53,7 @@ struct Session {
     /// Whether the layer is currently marked as carrying HDR.
     layer_hdr: Option<bool>,
     /// Playback position against the system clock when playing began, to show drift from it.
-    clock_origin: Option<(Instant, f64)>,
+    clock_origin: Option<(Instant, f64, f64)>,
     underruns: u64,
     /// Shown for a while when the file was picked up where it was left.
     resume_note: Option<ResumeNote>,
@@ -88,6 +89,8 @@ struct Running {
     quality: Quality,
     hardware: bool,
     audio_delay: f64,
+    /// How fast files play: kept from one to the next until the player is closed.
+    speed: f64,
 }
 
 struct App {
@@ -306,6 +309,8 @@ impl Running {
             start: start.or(recalled.start).unwrap_or(0.0),
             sound: settings.sound,
             audio_delay: self.audio_delay,
+            speed: self.speed,
+            subtitle_delay: recalled.subtitle_delay,
             volume: self.volume,
             muted: self.muted,
             subtitle_lift: self.subtitle_lift(),
@@ -422,6 +427,12 @@ impl Running {
                     .chose_audio(track, place.as_ref().map(|(_, place)| place.as_str()));
             }
             Command::SelectSubtitle(track) => self.memory.chose_subtitles(track),
+            // Kept for the files after this one, until the player is closed.
+            Command::SetSpeed(speed) => {
+                self.speed = speed.clamp(playback::MIN_SPEED, playback::MAX_SPEED);
+            }
+            // Subtitles moved to meet the speech stay moved for this file.
+            Command::SetSubtitleDelay(seconds) => self.memory.moved_subtitles(seconds),
             // Going anywhere else answers the note about where the file was picked up.
             Command::SeekTo(_) | Command::SeekBy(_) => {
                 if let Some(session) = &mut self.session {
@@ -509,6 +520,16 @@ impl Running {
             Request::Next => self.go(self.queue.next(), settings),
             Request::Previous => self.go(self.queue.previous(), settings),
             Request::Chapter(step) => self.chapter(step, false, settings),
+            Request::SpeedBy(step) => {
+                let speed = steps::speed(self.speed, step, playback::MIN_SPEED, playback::MAX_SPEED);
+                self.send(Command::SetSpeed(speed));
+            }
+            Request::SubtitleDelayBy(step) => {
+                if let Some(now) = self.session.as_ref().map(|s| s.player.status().subtitle_delay) {
+                    let delay = steps::subtitle_delay(now, step, playback::MAX_SUBTITLE_DELAY);
+                    self.send(Command::SetSubtitleDelay(delay));
+                }
+            }
             Request::Skip(step) => self.chapter(step, true, settings),
             Request::Play(index) => self.go(Some(index), settings),
             Request::Remove(index) => self.queue.remove(index),
@@ -799,6 +820,7 @@ impl App {
             quality: prefs.render_quality(),
             hardware: prefs.hardware_decoding,
             audio_delay: prefs.audio_delay_ms as f64 / 1000.0,
+            speed: 1.0,
             saved,
             prefs,
             preferences_path: self.settings.preferences.clone(),
@@ -907,11 +929,13 @@ impl App {
             return;
         }
         match session.clock_origin {
-            None => session.clock_origin = Some((Instant::now(), status.position)),
-            Some((since, from)) => {
-                let drift = (status.position - from) - since.elapsed().as_secs_f64();
+            // Measured afresh when the speed changes: the film's time runs at it.
+            Some((_, _, speed)) if speed != status.speed => session.clock_origin = None,
+            None => session.clock_origin = Some((Instant::now(), status.position, status.speed)),
+            Some((since, from, speed)) => {
+                let drift = (status.position - from) - since.elapsed().as_secs_f64() * speed;
                 println!(
-                    "Clock:   {:.3} s, {:+.1} ms against the system clock, {} pictures a second, each takes the GPU {:.1} ms, {} refreshes missed{}{}{}",
+                    "Clock:   {:.3} s, {:+.1} ms against the system clock, {} pictures a second, each takes the GPU {:.1} ms, {} refreshes missed{}{}{}{}",
                     status.position,
                     drift * 1000.0,
                     status.pictures,
@@ -927,6 +951,11 @@ impl App {
                         ", a subtitle on screen"
                     } else {
                         ""
+                    },
+                    if speed != 1.0 {
+                        format!(", at {}x", report::trimmed(speed))
+                    } else {
+                        String::new()
                     }
                 );
             }

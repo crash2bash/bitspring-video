@@ -41,6 +41,14 @@ Early. What works today, on the Mac:
   no sound, or none in the preferred language while the file is in it. The dubbing chosen
   for one episode is played with the next ones of its folder
 - Choosing the sound track and the subtitle track
+- Subtitles moved to meet the speech, earlier or later by tenths of a second (up to 30 s
+  either way), from the subtitles menu or a key; kept for that file. Subtitles inside the
+  video are read ahead by as much as they are moved earlier, so they arrive in time
+- Speed from 0.5x to 2x, the sound keeping its pitch (FFmpeg's atempo). The speed stays for
+  the next files until the player is closed. Measured with `scripts/sync-check.sh`: the
+  picture meets its sound within a few milliseconds at every speed (-12 ms at 0.5x, -3 at 2x,
+  against -5 at 1x), with the sound file beside the video as well; 4K Dolby Vision plays at 2x
+  with no picture missed
 - Settings, each taking effect on the picture as it is changed: the display's peak brightness
   (its own figure, or yours), rendering quality, hardware decoding; subtitle size, subtitle
   brightness in HDR, preferred subtitle and sound languages; picture delay for lip sync
@@ -197,7 +205,9 @@ bitspring-video --audio-delay 80 <file>     the TV or receiver delays sound by 8
 
 Keys: Space pauses, Left / Right seek 5 seconds (with Shift, a minute; with Option on the
 Mac and Ctrl on Windows, a chapter), Page Down / Page Up go to the next and the previous
-chapter, Up / Down change the volume, M mutes, S steps through the subtitle tracks, A through the sound tracks, N and P go to
+chapter, [ and ] change the speed by a quarter (Delete or Backspace for the usual one), Z and X
+move the subtitles a tenth of a second earlier or later (with Shift, a second), Up / Down
+change the volume, M mutes, S steps through the subtitle tracks, A through the sound tracks, N and P go to
 the next and the previous file of the folder or the playlist, L opens the list, F or a
 double-click for full screen, I opens the signal panel, Cmd+comma the settings, Cmd+O a file. The controls hide after a few seconds of playback and return when the pointer moves.
 

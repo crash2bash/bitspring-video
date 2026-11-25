@@ -77,6 +77,10 @@ pub enum Request {
     /// What a "next track" or "previous track" key means for a film: the next chapter, and
     /// after the last one the next file; the same backwards.
     Skip(i32),
+    /// Faster (positive) or slower by this much, from the speed it plays at now.
+    SpeedBy(f64),
+    /// Subtitles this many seconds later (negative: earlier) than they are now.
+    SubtitleDelayBy(f64),
     /// Play the file at this place in the list.
     Play(usize),
     /// Take the file at this place out of the list.
@@ -133,6 +137,10 @@ pub fn parse(text: &str) -> Option<Request> {
         "previous" => Request::Previous,
         "chapter-next" => Request::Chapter(1),
         "chapter-previous" => Request::Chapter(-1),
+        "speed" => Request::Player(Command::SetSpeed(number()?)),
+        "speed-by" => Request::SpeedBy(number()?),
+        "subtitle-delay" => Request::Player(Command::SetSubtitleDelay(number()?)),
+        "subtitle-delay-by" => Request::SubtitleDelayBy(number()?),
         "skip-next" => Request::Skip(1),
         "skip-previous" => Request::Skip(-1),
         "queue-play" => Request::Play(place()?),
@@ -240,6 +248,10 @@ pub struct State {
     resumed_from: Option<f64>,
     volume: f32,
     muted: bool,
+    /// How fast it plays, 1 as made.
+    speed: f64,
+    /// Seconds subtitles are shown late (negative: early).
+    subtitle_delay: f64,
     fullscreen: bool,
     mode: &'static str,
     video: Option<VideoState>,
@@ -494,6 +506,8 @@ impl State {
                 resumed_from: None,
                 volume,
                 muted,
+                speed: 1.0,
+                subtitle_delay: 0.0,
                 fullscreen,
                 mode: mode_name(mode),
                 video: None,
@@ -593,6 +607,9 @@ impl State {
             resumed_from,
             volume: status.volume,
             muted: status.muted,
+            speed: status.speed,
+            // Whole hundredths: the steps the keys take are tenths.
+            subtitle_delay: (status.subtitle_delay * 100.0).round() / 100.0,
             fullscreen,
             mode: mode_name(status.mode),
             video,
@@ -635,5 +652,10 @@ mod tests {
         assert!(matches!(parse("next"), Some(Request::Next)));
         assert!(matches!(parse("chapter-previous"), Some(Request::Chapter(-1))));
         assert!(matches!(parse("skip-next"), Some(Request::Skip(1))));
+        assert!(matches!(parse("speed-by -0.25"), Some(Request::SpeedBy(d)) if d == -0.25));
+        assert!(matches!(
+            parse("subtitle-delay -1.5"),
+            Some(Request::Player(Command::SetSubtitleDelay(d))) if d == -1.5
+        ));
     }
 }

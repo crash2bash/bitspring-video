@@ -841,6 +841,82 @@ impl Drop for AudioDecoder {
     }
 }
 
+// ---- Sound at another speed --------------------------------------------------------------
+
+/// Makes sound faster or slower without changing its pitch: interleaved samples in, the same
+/// kind out, `speed` times as fast. What comes out lags what goes in by a few tens of
+/// milliseconds; [`Tempo::finish`] has the rest come out at the end.
+pub struct Tempo {
+    ptr: NonNull<ffi::bsv_tempo>,
+    channels: usize,
+}
+
+// SAFETY: used only by the thread that owns it.
+unsafe impl Send for Tempo {}
+
+impl Tempo {
+    pub fn open(rate: u32, channels: u16, speed: f64) -> Result<Tempo, Error> {
+        let mut error = [0 as c_char; 256];
+        // SAFETY: the error buffer outlives the call.
+        let ptr = unsafe {
+            ffi::bsv_tempo_open(
+                rate as c_int,
+                channels as c_int,
+                speed,
+                error.as_mut_ptr(),
+                error.len() as c_int,
+            )
+        };
+        NonNull::new(ptr)
+            .map(|ptr| Tempo {
+                ptr,
+                channels: channels.max(1) as usize,
+            })
+            .ok_or_else(|| Error(text(&error)))
+    }
+
+    /// Put sound in. Whole frames only: the length is a multiple of the channel count.
+    pub fn send(&mut self, samples: &[f32]) -> Result<(), Error> {
+        let frames = (samples.len() / self.channels) as c_int;
+        if frames == 0 {
+            return Ok(());
+        }
+        // SAFETY: `samples` holds `frames` whole frames and outlives the call; they are copied.
+        match unsafe { ffi::bsv_tempo_send(self.ptr.as_ptr(), samples.as_ptr(), frames) } {
+            code if code >= 0 => Ok(()),
+            code => Err(Error(format!("the change of speed failed (FFmpeg error {code})"))),
+        }
+    }
+
+    /// No more sound will be put in: what is still inside comes out.
+    pub fn finish(&mut self) {
+        // SAFETY: zero frames says the end; the pointer is not read.
+        unsafe { ffi::bsv_tempo_send(self.ptr.as_ptr(), std::ptr::null(), 0) };
+    }
+
+    /// The next piece of sound that is ready, if any.
+    pub fn receive(&mut self) -> Option<&[f32]> {
+        let mut samples: *const f32 = std::ptr::null();
+        let mut frames: c_int = 0;
+        // SAFETY: both are valid out-pointers.
+        match unsafe { ffi::bsv_tempo_receive(self.ptr.as_ptr(), &mut samples, &mut frames) } {
+            1 if frames > 0 && !samples.is_null() => {
+                // SAFETY: the filter holds these samples until it is called again, which the
+                // returned borrow of `self` prevents.
+                Some(unsafe { std::slice::from_raw_parts(samples, frames as usize * self.channels) })
+            }
+            _ => None,
+        }
+    }
+}
+
+impl Drop for Tempo {
+    fn drop(&mut self) {
+        // SAFETY: we own the filter.
+        unsafe { ffi::bsv_tempo_close(self.ptr.as_ptr()) };
+    }
+}
+
 // ---- Subtitles ------------------------------------------------------------------------------
 
 /// What a subtitle track is made of, which decides how it is drawn.
@@ -1253,6 +1329,12 @@ impl Gpu {
     pub fn set_subtitle_lift(&mut self, pixels: f32) {
         // SAFETY: plain call on an owned gpu.
         unsafe { ffi::bsv_gpu_subs_set_lift(self.ptr.as_ptr(), pixels) };
+    }
+
+    /// Show each subtitle this many seconds after the moment it is timed for (negative: before).
+    pub fn set_subtitle_delay(&mut self, seconds: f64) {
+        // SAFETY: plain call on an owned gpu.
+        unsafe { ffi::bsv_gpu_subs_set_delay(self.ptr.as_ptr(), seconds) };
     }
 
     /// After a seek: forget the subtitle events received so far.

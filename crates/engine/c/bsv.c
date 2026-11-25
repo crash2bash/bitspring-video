@@ -19,6 +19,9 @@
 
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
+#include <libavfilter/avfilter.h>
+#include <libavfilter/buffersink.h>
+#include <libavfilter/buffersrc.h>
 #include <libavutil/dovi_meta.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/avstring.h>
@@ -1448,6 +1451,109 @@ void *bsv_frame_share(void *avframe)
     return av_frame_clone(avframe);
 }
 
+// ---- Sound at another speed --------------------------------------------------------------
+//
+// FFmpeg's atempo: the sound is cut into short overlapping pieces that are laid down closer
+// together or further apart, so that it goes faster or slower and keeps its pitch.
+
+struct bsv_tempo {
+    AVFilterGraph *graph;
+    AVFilterContext *in, *out;
+    AVFrame *frame;     // the last one handed out, kept until the next call
+    AVChannelLayout layout;
+    int rate;
+    int64_t sent;
+};
+
+void bsv_tempo_close(bsv_tempo *t)
+{
+    if (!t)
+        return;
+    avfilter_graph_free(&t->graph);
+    av_frame_free(&t->frame);
+    av_channel_layout_uninit(&t->layout);
+    av_free(t);
+}
+
+bsv_tempo *bsv_tempo_open(int rate, int channels, double speed, char *error, int error_len)
+{
+    bsv_tempo *t = av_mallocz(sizeof(*t));
+    if (!t)
+        return NULL;
+    t->rate = rate;
+    av_channel_layout_default(&t->layout, channels);
+    char layout[64];
+    av_channel_layout_describe(&t->layout, layout, sizeof(layout));
+
+    char in_args[160], tempo_args[64], format_args[160];
+    snprintf(in_args, sizeof(in_args), "time_base=1/%d:sample_rate=%d:sample_fmt=flt:channel_layout=%s",
+             rate, rate, layout);
+    snprintf(tempo_args, sizeof(tempo_args), "tempo=%.6f", speed);
+    snprintf(format_args, sizeof(format_args), "sample_fmts=flt:sample_rates=%d:channel_layouts=%s", rate, layout);
+
+    AVFilterContext *tempo = NULL, *format = NULL;
+    int ret;
+    t->graph = avfilter_graph_alloc();
+    t->frame = av_frame_alloc();
+    if (!t->graph || !t->frame) {
+        ret = AVERROR(ENOMEM);
+        goto fail;
+    }
+    if ((ret = avfilter_graph_create_filter(&t->in, avfilter_get_by_name("abuffer"), "in", in_args, NULL, t->graph)) < 0 ||
+        (ret = avfilter_graph_create_filter(&tempo, avfilter_get_by_name("atempo"), "tempo", tempo_args, NULL, t->graph)) < 0 ||
+        (ret = avfilter_graph_create_filter(&format, avfilter_get_by_name("aformat"), "format", format_args, NULL, t->graph)) < 0 ||
+        (ret = avfilter_graph_create_filter(&t->out, avfilter_get_by_name("abuffersink"), "out", NULL, NULL, t->graph)) < 0 ||
+        (ret = avfilter_link(t->in, 0, tempo, 0)) < 0 ||
+        (ret = avfilter_link(tempo, 0, format, 0)) < 0 ||
+        (ret = avfilter_link(format, 0, t->out, 0)) < 0 ||
+        (ret = avfilter_graph_config(t->graph, NULL)) < 0)
+        goto fail;
+    return t;
+
+fail:
+    set_error(error, error_len, "cannot set up the change of speed", ret);
+    bsv_tempo_close(t);
+    return NULL;
+}
+
+int bsv_tempo_send(bsv_tempo *t, const float *samples, int frames)
+{
+    if (frames <= 0)
+        return av_buffersrc_add_frame(t->in, NULL);
+    AVFrame *f = av_frame_alloc();
+    if (!f)
+        return AVERROR(ENOMEM);
+    f->format = AV_SAMPLE_FMT_FLT;
+    f->sample_rate = t->rate;
+    f->nb_samples = frames;
+    f->pts = t->sent;
+    int ret = av_channel_layout_copy(&f->ch_layout, &t->layout);
+    if (ret >= 0)
+        ret = av_frame_get_buffer(f, 0);
+    if (ret >= 0) {
+        memcpy(f->data[0], samples, (size_t) frames * t->layout.nb_channels * sizeof(float));
+        t->sent += frames;
+        ret = av_buffersrc_add_frame(t->in, f);
+    }
+    av_frame_free(&f);
+    return ret;
+}
+
+int bsv_tempo_receive(bsv_tempo *t, const float **samples, int *frames)
+{
+    av_frame_unref(t->frame);
+    int ret = av_buffersink_get_frame(t->out, t->frame);
+    if (ret == AVERROR(EAGAIN))
+        return 0;
+    if (ret == AVERROR_EOF)
+        return 2;
+    if (ret < 0)
+        return ret;
+    *samples = (const float *) t->frame->data[0];
+    *frames = t->frame->nb_samples;
+    return 1;
+}
+
 // ---- Rendering ------------------------------------------------------------------------------
 
 #define BSV_SUB_EVENTS 32
@@ -1500,6 +1606,7 @@ struct bsv_gpu {
     int sub_frame_w, sub_frame_h;   // the size text was last laid out for
     bool sub_ready;
     float sub_lift; // pixels at the bottom of the window that subtitles keep clear of
+    double sub_delay; // seconds subtitles are shown after the moment they are timed for
     float sub_scale; // text size, 1 = as styled
     float sub_nits;  // how bright subtitle white is, cd/m²; 0 = SDR white
 };
@@ -1715,6 +1822,13 @@ void bsv_gpu_subs_set_look(bsv_gpu *g, float scale, float nits)
 void bsv_gpu_subs_set_lift(bsv_gpu *g, float pixels)
 {
     g->sub_lift = pixels > 0 ? pixels : 0;
+}
+
+void bsv_gpu_subs_set_delay(bsv_gpu *g, double seconds)
+{
+    if (seconds != g->sub_delay)
+        g->sub_ready = false;
+    g->sub_delay = seconds;
 }
 
 void bsv_gpu_subs_clear(bsv_gpu *g)
@@ -2390,7 +2504,7 @@ int bsv_gpu_render(bsv_gpu *g, double pts, double vsync, const struct bsv_target
 
     struct pl_overlay subtitle;
     struct pl_overlay_part subtitle_part;
-    if (g->subs_kind && subs_prepare(g, pts, &out, &subtitle, &subtitle_part)) {
+    if (g->subs_kind && subs_prepare(g, pts - g->sub_delay, &out, &subtitle, &subtitle_part)) {
         out.overlays = &subtitle;
         out.num_overlays = 1;
         stats->subtitle_shown = 1;

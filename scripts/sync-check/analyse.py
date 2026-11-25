@@ -33,7 +33,8 @@ for stamped, count, rate, offset in index:
             t = stamped + i / rate
             if t > quiet_until:
                 beeps.append(t)
-            quiet_until = t + 0.5
+            # Beeps come a second apart, half a second at double speed.
+            quiet_until = t + 0.3
 
 start = min(times[0][0] if times else 0, float(index[0][0]) if index else 0)
 print(f"frames {len(frames)} (times from {'display' if use_shown else 'stamp'}), brightness {floor:.0f}..{peak:.0f}; "

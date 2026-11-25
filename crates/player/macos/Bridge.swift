@@ -157,6 +157,16 @@ final class InterfaceController {
             return true
         }
         let step = flags.contains(.shift) ? 60 : 5
+        // By the key's place, not its letter: the same keys whatever the keyboard's language.
+        let shift = flags.contains(.shift)
+        switch event.keyCode {
+        case 33: model.send("speed-by -0.25"); return true       // [
+        case 30: model.send("speed-by 0.25"); return true        // ]
+        case 51: model.send("speed 1"); return true              // delete
+        case 6: model.send("subtitle-delay-by \(shift ? -1 : -0.1)"); return true   // Z
+        case 7: model.send("subtitle-delay-by \(shift ? 1 : 0.1)"); return true     // X
+        default: break
+        }
         switch event.keyCode {
         case 49: model.send("toggle-pause")                 // space
         case 121: model.send("chapter-next")                // page down

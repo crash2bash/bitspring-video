@@ -15,11 +15,12 @@ use std::time::{Duration, Instant};
 
 use bitspring_video::chapters;
 use bitspring_video::history::{Memory, ResumeNote};
-use bitspring_video::playback::{Command, Options, Player};
+use bitspring_video::playback::{self, Command, Options, Player};
 use bitspring_video::prefs::Preferences;
 use bitspring_video::queue::{Arrived, Queue};
 use bitspring_video::report;
 use bitspring_video::sidecars;
+use bitspring_video::steps;
 use bitspring_video::ui::{self, Playing, Request, State, View};
 use bsv_display::policy::HdrMode;
 use bsv_display::{Display, HdrStatus, Luminance, LuminanceSource, OsReport};
@@ -107,6 +108,8 @@ pub struct Host {
     preferences_path: PathBuf,
     volume: f32,
     muted: bool,
+    /// How fast files play: kept from one to the next until the player is closed.
+    speed: f64,
     /// False to play silently, for trying things out.
     sound: bool,
     mode: HdrMode,
@@ -168,6 +171,7 @@ impl Host {
             error: None,
             volume: saved.volume,
             muted: false,
+            speed: 1.0,
             sound,
             mode: saved.mode(),
             prefs: saved.clone(),
@@ -215,6 +219,12 @@ impl Host {
                     .chose_audio(track, place.as_ref().map(|(_, place)| place.as_str()));
             }
             Command::SelectSubtitle(track) => self.memory.chose_subtitles(track),
+            // Kept for the files after this one, until the player is closed.
+            Command::SetSpeed(speed) => {
+                self.speed = speed.clamp(playback::MIN_SPEED, playback::MAX_SPEED);
+            }
+            // Subtitles moved to meet the speech stay moved for this file.
+            Command::SetSubtitleDelay(seconds) => self.memory.moved_subtitles(seconds),
             // Going anywhere else answers the note about where the file was picked up.
             Command::SeekTo(_) | Command::SeekBy(_) => {
                 if let Some(session) = &mut self.session {
@@ -331,6 +341,8 @@ impl Host {
             start: recalled.start.unwrap_or(0.0),
             sound: self.sound,
             audio_delay: self.prefs.audio_delay_ms as f64 / 1000.0,
+            speed: self.speed,
+            subtitle_delay: recalled.subtitle_delay,
             volume: self.volume,
             muted: self.muted,
             subtitle_lift: self.subtitle_lift(),
@@ -409,6 +421,16 @@ impl Host {
             Some(Request::Next) => self.go(self.queue.next()),
             Some(Request::Previous) => self.go(self.queue.previous()),
             Some(Request::Chapter(step)) => self.chapter(step, false),
+            Some(Request::SpeedBy(step)) => {
+                let speed = steps::speed(self.speed, step, playback::MIN_SPEED, playback::MAX_SPEED);
+                self.send(Command::SetSpeed(speed));
+            }
+            Some(Request::SubtitleDelayBy(step)) => {
+                if let Some(now) = self.session.as_ref().map(|s| s.player.status().subtitle_delay) {
+                    let delay = steps::subtitle_delay(now, step, playback::MAX_SUBTITLE_DELAY);
+                    self.send(Command::SetSubtitleDelay(delay));
+                }
+            }
             Some(Request::Skip(step)) => self.chapter(step, true),
             Some(Request::Play(index)) => self.go(Some(index)),
             Some(Request::Remove(index)) => self.queue.remove(index),
