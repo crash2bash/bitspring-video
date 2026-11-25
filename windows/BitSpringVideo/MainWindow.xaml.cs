@@ -96,6 +96,8 @@ public sealed partial class MainWindow : Window
         Tip(SettingsButton, L("Settings", "Настройки"));
         Tip(DurationButton, L("Switch between length and time left", "Длительность или оставшееся время"));
         Tip(ChaptersButton, L("Chapters (Page Up, Page Down)", "Главы (Page Up, Page Down)"));
+        // Drawn, not a glyph: it has no text of its own for a screen reader to say.
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(ChaptersButton, L("Chapters", "Главы"));
         Tip(SubtitlesButton, L("Subtitles", "Субтитры"));
         Tip(SoundButton, L("Sound track", "Звуковая дорожка"));
 
