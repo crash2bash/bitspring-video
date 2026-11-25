@@ -198,13 +198,90 @@ fn leads_elsewhere(path: &str) -> bool {
     !on_a_disk
 }
 
-/// Folders where a Mac mounts another machine's files the moment a name under them is asked for.
-const MOUNTED_ON_DEMAND: [&str; 4] = [
-    "/net",
-    "/Network",
-    "/System/Volumes/Data/net",
-    "/System/Volumes/Data/Network",
-];
+/// Whether a path is, by its names, in a folder where a Mac mounts another machine's files
+/// the moment a name under it is asked for: /net and /Network. Letters are compared without
+/// their case, as the Mac's own disks compare them.
+fn mounts_on_demand(path: &Path) -> bool {
+    let names: Vec<String> = path
+        .components()
+        .filter_map(|part| match part {
+            std::path::Component::Normal(name) => Some(name.to_string_lossy().to_lowercase()),
+            _ => None,
+        })
+        .take(4)
+        .collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    matches!(
+        names.as_slice(),
+        ["net" | "network", ..] | ["system", "volumes", "data", "net" | "network", ..]
+    )
+}
+
+/// Whether a whole path leads to another machine, going by how it is written.
+fn elsewhere(path: &Path) -> bool {
+    // On Windows a path begins with what kind of place it is: only disks are this machine.
+    #[cfg(windows)]
+    if let Some(std::path::Component::Prefix(prefix)) = path.components().next()
+        && !matches!(
+            prefix.kind(),
+            std::path::Prefix::Disk(_) | std::path::Prefix::VerbatimDisk(_)
+        )
+    {
+        return true;
+    }
+    leads_elsewhere(&path.to_string_lossy()) || (cfg!(not(windows)) && mounts_on_demand(path))
+}
+
+/// Check that a path stays on this machine with every link in it followed. The links are
+/// read, not gone through, and each place is judged by its name before anything is asked
+/// about it, so no connection is made on the way. `false` for a path that leads elsewhere.
+fn stays_here(path: &Path) -> bool {
+    /// More links than this in one path is a loop.
+    const MOST_LINKS: usize = 40;
+    let mut path = tidy(path);
+    for _ in 0..MOST_LINKS {
+        if elsewhere(&path) {
+            return false;
+        }
+        let mut walked = PathBuf::new();
+        let mut parts = path.components();
+        let mut link = None;
+        for part in parts.by_ref() {
+            walked.push(part.as_os_str());
+            if !matches!(part, std::path::Component::Normal(_)) {
+                continue;
+            }
+            match std::fs::symlink_metadata(&walked) {
+                Ok(found) if found.file_type().is_symlink() => {
+                    link = std::fs::read_link(&walked).ok();
+                    if link.is_none() {
+                        // A link that cannot be read is not one to go through.
+                        return false;
+                    }
+                    break;
+                }
+                Ok(_) => {}
+                // Nothing by this name: there is nothing further to follow.
+                Err(_) => return true,
+            }
+        }
+        let Some(target) = link else {
+            return true;
+        };
+        // Windows writes where a folder link leads as "\??\C:\films", or "\??\UNC\server\films".
+        let written = target.to_string_lossy().into_owned();
+        let target = match written.strip_prefix("\\??\\") {
+            Some(rest) if rest.to_ascii_uppercase().starts_with("UNC\\") => return false,
+            Some(rest) => PathBuf::from(rest),
+            None if leads_elsewhere(&written) => return false,
+            None => target,
+        };
+        walked.pop();
+        let rest: PathBuf = parts.collect();
+        path = tidy(&walked.join(target).join(rest));
+    }
+    false
+}
 
 /// A path without its "." and "..", worked out from the names alone: nothing is looked up.
 fn tidy(path: &Path) -> PathBuf {
@@ -258,9 +335,7 @@ pub fn parse_playlist(text: &str, folder: &Path) -> Vec<PathBuf> {
             } else {
                 folder.join(path)
             });
-            // Out of the playlist's own folder and into one that mounts other machines.
-            let mounts = MOUNTED_ON_DEMAND.iter().any(|m| path.starts_with(m));
-            (!mounts || path.starts_with(folder)).then_some(path)
+            (!elsewhere(&path)).then_some(path)
         })
         .take(MOST_ITEMS)
         .collect()
@@ -293,10 +368,13 @@ fn read_playlist(file: &Path) -> Result<Vec<PathBuf>, String> {
         return Err(format!("{name}: too large to be a playlist"));
     }
     let bytes = std::fs::read(file).map_err(|e| format!("{name}: {e}"))?;
-    let folder = file.parent().unwrap_or(Path::new("."));
+    // In full, so that what the playlist names is judged by where it really is.
+    let file = std::path::absolute(file).map_err(|e| format!("{name}: {e}"))?;
+    let folder = file.parent().unwrap_or(Path::new("/"));
     let items: Vec<PathBuf> = parse_playlist(&String::from_utf8_lossy(&bytes), folder)
         .into_iter()
-        .filter(|p| p.is_file())
+        // First that the path stays on this machine, and only then whether the file is there.
+        .filter(|p| stays_here(p) && p.is_file())
         .collect();
     if items.is_empty() {
         return Err(format!("{name}: none of the files it names are here"));
@@ -905,20 +983,42 @@ mod tests {
     #[test]
     fn a_playlist_cannot_reach_folders_that_mount_other_machines() {
         let text = "/net/server/a.mkv\n../net/server/b.mkv\nsub/../../Network/Servers/s/c.mkv\n\
-                    /System/Volumes/Data/net/server/d.mkv\n/network/e.mkv\nsub/./f.mkv\n../g.mkv\n";
+                    /System/Volumes/Data/net/server/d.mkv\n/NET/server/e.mkv\n/network/f.mkv\n\
+                    /system/volumes/DATA/Net/g.mkv\nsub/./h.mkv\n../i.mkv\n/networks/j.mkv\n";
         assert_eq!(
             parse_playlist(text, Path::new("/lists")),
             [
-                PathBuf::from("/network/e.mkv"),
-                PathBuf::from("/lists/sub/f.mkv"),
-                PathBuf::from("/g.mkv"),
+                PathBuf::from("/lists/sub/h.mkv"),
+                PathBuf::from("/i.mkv"),
+                PathBuf::from("/networks/j.mkv"),
             ]
         );
-        // A playlist that is itself there may name what is beside it, and nothing further.
-        assert_eq!(
-            parse_playlist("a.mkv\n../other/b.mkv\n", Path::new("/net/server/films")),
-            [PathBuf::from("/net/server/films/a.mkv")]
-        );
+        // Nor from a playlist that is itself there, nor from one opened by its bare name.
+        assert!(parse_playlist("a.mkv\n", Path::new("/net/server/films")).is_empty());
+        assert!(parse_playlist("/net/server/a.mkv\nnet/b.mkv\n", Path::new("")).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_into_such_a_folder_is_not_gone_through() {
+        let folder = scratch("links");
+        let film = touch(folder.join("real/film.mkv"));
+        std::os::unix::fs::symlink("/net/server/films", folder.join("away")).unwrap();
+        std::os::unix::fs::symlink("away", folder.join("twice")).unwrap();
+        std::os::unix::fs::symlink("real", folder.join("near")).unwrap();
+        std::os::unix::fs::symlink("round", folder.join("round")).unwrap();
+        assert!(stays_here(&film));
+        assert!(stays_here(&folder.join("near/film.mkv")));
+        assert!(stays_here(&folder.join("nothing/there.mkv")));
+        assert!(!stays_here(&folder.join("away/film.mkv")));
+        assert!(!stays_here(&folder.join("twice/film.mkv")));
+        assert!(!stays_here(&folder.join("near/../away/film.mkv")));
+        assert!(!stays_here(&folder.join("round/film.mkv")));
+
+        // Read from its file, a playlist gives only what stays here and is there.
+        let list = folder.join("list.m3u8");
+        std::fs::write(&list, "away/film.mkv\nnear/film.mkv\ntwice/film.mkv\n").unwrap();
+        assert_eq!(read_playlist(&list), Ok(vec![folder.join("near/film.mkv")]));
     }
 
     #[test]
