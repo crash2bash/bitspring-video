@@ -255,6 +255,8 @@ struct SettingsState {
     /// What the display itself reports.
     reported_peak: f32,
     quality: String,
+    /// "off", "faithful", "restoring".
+    upscaling: String,
     hardware_decoding: bool,
     dolby_vision: bool,
     subtitle_scale: f32,
@@ -329,6 +331,8 @@ struct SignalState {
     output_bits: u32,
     output_peak: f32,
     passthrough: bool,
+    /// The picture on screen was doubled by the neural network before being fitted to the window.
+    upscaled: bool,
 }
 
 #[derive(Serialize)]
@@ -414,6 +418,7 @@ impl State {
             display_peak: prefs.display_peak,
             reported_peak,
             quality: prefs.quality.clone(),
+            upscaling: prefs.upscaling.clone(),
             hardware_decoding: prefs.hardware_decoding,
             dolby_vision: prefs.dolby_vision,
             subtitle_scale: prefs.subtitle_scale,
@@ -516,6 +521,7 @@ impl State {
                 output_bits: stats.output_bits,
                 output_peak: stats.output_nits.1,
                 passthrough: output.passthrough && transfer != Transfer::Sdr,
+                upscaled: stats.upscaled,
             }),
             _ => None,
         };

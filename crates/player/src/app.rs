@@ -278,6 +278,8 @@ impl Running {
             mode: self.mode,
             dolby_vision: self.prefs.dolby_vision,
             quality: self.quality,
+            upscaler: self.prefs.upscaler(),
+            shader_cache: Some(Preferences::shader_cache(&self.preferences_path)),
             renderer_options: settings.renderer_options.clone(),
             start: start.or(recalled.start).unwrap_or(0.0),
             sound: settings.sound,
@@ -444,6 +446,7 @@ impl Running {
                 self.quality = self.prefs.render_quality();
                 self.send(Command::SetQuality(self.quality));
             }
+            "upscaling" => self.send(Command::SetUpscaler(self.prefs.upscaler())),
             "hardwareDecoding" => self.hardware = self.prefs.hardware_decoding,
             "dolbyVision" => self.send(Command::SetDolbyVision(self.prefs.dolby_vision)),
             "subtitleScale" | "subtitleNits" => self.send(Command::SubtitleLook {
@@ -865,9 +868,16 @@ impl App {
             Some((since, from)) => {
                 let drift = (status.position - from) - since.elapsed().as_secs_f64();
                 println!(
-                    "Clock:   {:.3} s, {:+.1} ms against the system clock{}",
+                    "Clock:   {:.3} s, {:+.1} ms against the system clock, a picture takes the GPU {:.1} ms, {} refreshes missed{}{}",
                     status.position,
                     drift * 1000.0,
+                    status.picture_gpu_ms,
+                    status.late,
+                    if status.stats.upscaled {
+                        ", upscaled"
+                    } else {
+                        ""
+                    },
                     if status.stats.subtitle_shown {
                         ", a subtitle on screen"
                     } else {

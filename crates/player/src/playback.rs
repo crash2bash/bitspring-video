@@ -31,7 +31,7 @@ use crate::sidecars::{self, Sidecar};
 use bsv_engine::{
     AudioDecoder, AudioInfo, Decoded, Frame, Gpu, MediaInfo, Packet, Pull, Quality, Read,
     RenderStats, RenderStatus, Source, SubtitleDecoder, SubtitleEvent, SubtitleKind, Track,
-    TrackKind, VideoDecoder,
+    TrackKind, Upscaler, VideoDecoder,
 };
 
 /// Decoded frames waiting for the renderer. A 4K 10-bit frame is about 25 MB.
@@ -56,6 +56,10 @@ pub struct Options {
     /// Apply a Dolby Vision file's RPU, or show its base layer as the plain signal it also is.
     pub dolby_vision: bool,
     pub quality: Quality,
+    /// The neural network that doubles pictures smaller than the window, when one is chosen.
+    pub upscaler: Option<Upscaler>,
+    /// The file compiled shaders are kept in between runs, if any.
+    pub shader_cache: Option<std::path::PathBuf>,
     /// Extra libplacebo options, "key=value,key=value".
     pub renderer_options: String,
     /// Where to begin, in seconds.
@@ -116,6 +120,7 @@ pub enum Command {
         nits: f32,
     },
     SetQuality(Quality),
+    SetUpscaler(Option<Upscaler>),
     /// Play a Dolby Vision file as Dolby Vision, or as the plain signal its base layer is.
     SetDolbyVision(bool),
     /// Seconds to hold the picture back against the sound.
@@ -155,6 +160,11 @@ pub struct Status {
     pub muted: bool,
     /// Gaps in the sound since the start: the device wanted samples that were not ready.
     pub underruns: u64,
+    /// What drawing a picture takes on the GPU, in milliseconds: the longest of the last second.
+    pub picture_gpu_ms: f32,
+    /// Refreshes of the display that came and went while a picture was still being drawn,
+    /// since the start: the GPU is not keeping up.
+    pub late: u64,
     /// Set when playback cannot go on; the thread has stopped.
     pub error: Option<String>,
 }
@@ -1306,7 +1316,20 @@ fn render_loop(
             gpu
         }
     };
+    // Shaders compiled before are not compiled again: the upscaler's take seconds on some
+    // systems, and without this they would at the start of every file.
+    if let Some(data) = options
+        .shader_cache
+        .as_ref()
+        .and_then(|file| std::fs::read(file).ok())
+    {
+        gpu.recall_compiled(&data);
+    }
+    let compiled_before = gpu.compiled_mark();
     gpu.set_options(options.quality, &options.renderer_options)?;
+    if let Err(e) = gpu.set_upscaler(options.upscaler) {
+        eprintln!("[warn] {e}");
+    }
     gpu.set_dolby_vision(options.dolby_vision);
     gpu.resize(size.0, size.1);
 
@@ -1448,6 +1471,9 @@ fn render_loop(
     let mut volume = options.volume;
     let mut muted = options.muted;
     let mut stats = RenderStats::default();
+    // How the GPU is keeping up: see `Status::picture_gpu_ms` and `Status::late`.
+    let mut gpu_peak = (Instant::now(), 0f32, 0f32);
+    let mut late = 0u64;
     let mut failures = 0u32;
     // The time the last picture was drawn for.
     let mut drawn_for = f64::MIN;
@@ -1556,6 +1582,11 @@ fn render_loop(
                 Ok(Command::SubtitleLook { scale, nits }) => gpu.set_subtitle_look(scale, nits),
                 Ok(Command::SetQuality(quality)) => {
                     if let Err(e) = gpu.set_options(quality, &options.renderer_options) {
+                        eprintln!("[warn] {e}");
+                    }
+                }
+                Ok(Command::SetUpscaler(upscaler)) => {
+                    if let Err(e) = gpu.set_upscaler(upscaler) {
                         eprintln!("[warn] {e}");
                     }
                 }
@@ -1768,10 +1799,25 @@ fn render_loop(
         // earlier time than the last one, which the queue of frames could not go back to.
         let ahead = gpu.frames_in_line() as f64 * vsync;
         let moment = (timeline.position() + ahead).max(drawn_for);
+        let asked = Instant::now();
         match gpu.render(moment, vsync, &output, &mut pull) {
             Ok((RenderStatus::Shown, s)) => {
                 failures = 0;
                 stats = s;
+                // The call returns at the display's next refresh. One that took the time of
+                // two had a picture still on the GPU when its refresh came.
+                if !paused && !waiting_for_picture {
+                    let refreshes = asked.elapsed().as_secs_f64() / vsync;
+                    if refreshes > 1.7 {
+                        late += (refreshes - 0.7) as u64;
+                    }
+                }
+                if s.new_picture {
+                    gpu_peak.2 = gpu_peak.2.max(s.gpu_ms);
+                }
+                if gpu_peak.0.elapsed() >= Duration::from_secs(1) {
+                    gpu_peak = (Instant::now(), gpu_peak.2, 0.0);
+                }
                 drawn_for = moment;
                 over_at = None;
                 if waiting_for_picture {
@@ -1829,6 +1875,8 @@ fn render_loop(
             .sound
             .as_ref()
             .map_or(0, |(clock, _)| clock.underruns());
+        s.picture_gpu_ms = gpu_peak.1;
+        s.late = late;
         if s.info.as_ref() != Some(&info) {
             s.info = Some(info.clone());
         }
@@ -1850,6 +1898,20 @@ fn render_loop(
         s.subtitle_track = subtitle_track;
     }
 
+    if let Some(file) = &options.shader_cache
+        && gpu.compiled_mark() != compiled_before
+    {
+        if let Some(folder) = file.parent() {
+            let _ = std::fs::create_dir_all(folder);
+        }
+        if let Err(e) = std::fs::write(file, gpu.compiled()) {
+            eprintln!(
+                "[warn] cannot keep the compiled shaders in {}: {e}",
+                file.display()
+            );
+        }
+    }
+
     shared.quit.store(true, Ordering::Relaxed);
     drop(frames);
     drop(reader_commands);
@@ -1869,6 +1931,8 @@ mod tests {
             mode: HdrMode::default(),
             dolby_vision: true,
             quality: Quality::High,
+            upscaler: None,
+            shader_cache: None,
             renderer_options: String::new(),
             start: 0.0,
             sound: true,

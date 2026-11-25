@@ -136,6 +136,9 @@ pub struct bsv_render_stats {
     pub out_max_nits: c_float,
     pub out_min_nits: c_float,
     pub out_bits: c_int,
+    pub upscaled: c_int,
+    pub new_picture: c_int,
+    pub gpu_ms: c_float,
     pub fps: c_double,
 }
 
@@ -249,6 +252,10 @@ unsafe extern "C" {
     pub fn bsv_gpu_destroy(g: *mut bsv_gpu);
     pub fn bsv_gpu_resize(g: *mut bsv_gpu, width: c_int, height: c_int);
     pub fn bsv_gpu_set_options(g: *mut bsv_gpu, preset: c_int, options: *const c_char) -> c_int;
+    pub fn bsv_gpu_set_upscaler(g: *mut bsv_gpu, shader: *const c_char, len: usize) -> c_int;
+    pub fn bsv_gpu_cache_load(g: *mut bsv_gpu, data: *const c_void, len: usize) -> c_int;
+    pub fn bsv_gpu_cache_save(g: *mut bsv_gpu, data: *mut c_void, size: usize) -> usize;
+    pub fn bsv_gpu_cache_signature(g: *mut bsv_gpu) -> u64;
     pub fn bsv_gpu_reset(g: *mut bsv_gpu);
     pub fn bsv_gpu_set_dolby_vision(g: *mut bsv_gpu, use_it: c_int);
     pub fn bsv_gpu_frames_in_line(g: *const bsv_gpu) -> c_int;

@@ -81,6 +81,23 @@ private struct SettingsPanel: View {
                         onSelect: { model.set("quality", $0) })
                         .frame(width: 236)
                 }
+                row(L("Upscaling", "Апскейлинг")) {
+                    Choice(
+                        options: [
+                            ("off", L("Off", "Выкл")),
+                            ("faithful", L("Faithful", "Точный")),
+                            ("restoring", L("Restoring", "С очисткой")),
+                        ],
+                        selected: settings.upscaling,
+                        onSelect: { model.set("upscaling", $0) })
+                        .frame(width: 236)
+                }
+                Text(L(
+                    "A neural network doubles a picture smaller than the window. Restoring also takes away what compression left.",
+                    "Нейросеть удваивает картинку, которая меньше окна. «С очисткой» заодно убирает следы сжатия."))
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.quiet)
+                    .fixedSize(horizontal: false, vertical: true)
                 row(
                     L("The Mac's video decoder", "Аппаратный декодер"),
                     note: L("From the next file", "Со следующего файла")

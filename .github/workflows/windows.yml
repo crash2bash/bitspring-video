@@ -246,7 +246,16 @@ jobs:
           # list (opened from "1 / 2") should follow it there.
           Photograph "8-series" 40 @("$here\clip\series\Show-01.mkv", "--show", "queue")
 
+          # An episode a third of the window's size, with the neural upscaler on: its shaders
+          # must compile for Direct3D and run, which the signal panel and the log then say.
+          # In software that takes a while; the clip waits at its first picture meanwhile.
+          '{"quality":"fast","upscaling":"faithful"}' | Set-Content "$here\shots\settings.json"
+          Photograph "9-upscaled" 60 @("$here\clip\series\Show-02.mkv", "--show", "signal")
+
           # A "Signal" line is written once a frame has gone through the renderer to the panel.
+          if (-not (Select-String -Path "$here\shots\9-upscaled.log" -Pattern '^Signal:.*doubled by the neural upscaler' -Quiet)) {
+            throw "The upscaler did not run"
+          }
           if (-not (Select-String -Path "$here\shots\2-playing.log" -Pattern '^Signal:' -Quiet)) {
             throw "No picture reached the panel"
           }

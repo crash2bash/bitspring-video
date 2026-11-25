@@ -555,6 +555,12 @@ private struct SignalPanel: View {
             out.append((
                 L("Decoding", "Декодер"),
                 v.hardware ? L("The Mac's video decoder", "Аппаратный декодер Mac") : L("Software", "Программный")))
+            if status.signal?.upscaled == true {
+                let size = "\(v.width * 2) × \(v.height * 2)"
+                out.append((
+                    L("Scaling", "Масштаб"),
+                    L("Doubled to \(size) by a neural network (ArtCNN)", "Удвоено до \(size) нейросетью (ArtCNN)")))
+            }
         }
         if let s = status.signal {
             var text = "\(s.outputPrimaries) \(s.outputTransfer), \(s.outputBits) " + L("bit", "бит")

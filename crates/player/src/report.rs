@@ -247,8 +247,13 @@ pub fn signal_path(
     } else {
         "software decode"
     };
+    let upscaled = if stats.upscaled {
+        "; doubled by the neural upscaler"
+    } else {
+        ""
+    };
     format!(
-        "{source}  ->  {got} ({how}; {decode}; mode: {})",
+        "{source}  ->  {got} ({how}; {decode}{upscaled}; mode: {})",
         mode.label()
     )
 }

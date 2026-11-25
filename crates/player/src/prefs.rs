@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use bsv_display::policy::HdrMode;
-use bsv_engine::Quality;
+use bsv_engine::{Quality, Upscaler};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -15,6 +15,9 @@ pub struct Preferences {
     pub display_peak: Option<f32>,
     /// "high", "balanced", "fast".
     pub quality: String,
+    /// "off", "faithful", "restoring": a neural network doubles a picture smaller than the
+    /// window before it is fitted there; the second also takes away what compression left.
+    pub upscaling: String,
     pub hardware_decoding: bool,
     /// For a file that is both Dolby Vision and a plain signal (HDR10 for profile 8.1): play
     /// the Dolby Vision version. `false`: play the plain one.
@@ -42,6 +45,7 @@ impl Default for Preferences {
             hdr_mode: "auto".into(),
             display_peak: None,
             quality: "high".into(),
+            upscaling: "off".into(),
             hardware_decoding: true,
             dolby_vision: true,
             subtitle_scale: 1.0,
@@ -103,6 +107,9 @@ impl Preferences {
         if !["high", "balanced", "fast"].contains(&self.quality.as_str()) {
             self.quality = "high".into();
         }
+        if !["off", "faithful", "restoring"].contains(&self.upscaling.as_str()) {
+            self.upscaling = "off".into();
+        }
         let within = |v: f32, (low, high): (f32, f32), fallback: f32| {
             if v.is_finite() {
                 v.clamp(low, high)
@@ -128,6 +135,7 @@ impl Preferences {
             "hdrMode" => self.hdr_mode = value.trim().to_string(),
             "displayPeak" => self.display_peak = number,
             "quality" => self.quality = value.trim().to_string(),
+            "upscaling" => self.upscaling = value.trim().to_string(),
             "hardwareDecoding" => self.hardware_decoding = matches!(value.trim(), "1" | "true"),
             "dolbyVision" => self.dolby_vision = matches!(value.trim(), "1" | "true"),
             "subtitleScale" => self.subtitle_scale = number.unwrap_or(1.0),
@@ -167,6 +175,35 @@ impl Preferences {
             _ => Quality::High,
         }
     }
+
+    pub fn upscaler(&self) -> Option<Upscaler> {
+        match self.upscaling.as_str() {
+            "faithful" => Some(Upscaler::Faithful),
+            "restoring" => Some(Upscaler::Restoring),
+            _ => None,
+        }
+    }
+
+    /// Where the renderer's compiled shaders are kept between runs, for preferences kept at
+    /// `settings`: among the system's caches for the usual place, beside any other file.
+    pub fn shader_cache(settings: &Path) -> PathBuf {
+        if settings != Preferences::default_path() {
+            let stem = settings
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("settings");
+            return settings.with_file_name(format!("{stem}.shaders.cache"));
+        }
+        #[cfg(target_os = "macos")]
+        let base = std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library/Caches"));
+        #[cfg(windows)]
+        let base = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+        #[cfg(not(any(target_os = "macos", windows)))]
+        let base = std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache"));
+        base.unwrap_or_else(|| PathBuf::from("."))
+            .join("BitSpring Video")
+            .join("shaders.cache")
+    }
 }
 
 #[cfg(test)]
@@ -197,6 +234,10 @@ mod tests {
         let mut p = Preferences::default();
         p.set("quality", "ludicrous");
         assert_eq!(p.quality, "high");
+        assert!(p.set("upscaling", "restoring"));
+        assert_eq!(p.upscaler(), Some(Upscaler::Restoring));
+        p.set("upscaling", "enormous");
+        assert_eq!((p.upscaling.as_str(), p.upscaler()), ("off", None));
         p.set("hdrMode", "");
         assert_eq!(p.hdr_mode, "auto");
         assert!(!p.set("noSuchThing", "1"));

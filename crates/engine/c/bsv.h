@@ -195,6 +195,10 @@ struct bsv_render_stats {
     float out_max_nits, out_min_nits;
     int out_bits;
 
+    int upscaled;           // the picture on screen was doubled by the upscaling shader
+    int new_picture;        // this call drew a picture, not only showed one drawn before
+    float gpu_ms;           // what this call's work took on the GPU, as last measured
+
     double fps;             // estimated from the frames' timestamps
 };
 
@@ -214,6 +218,20 @@ void bsv_gpu_resize(bsv_gpu *g, int width, int height);
 
 // preset: 0 fast, 1 balanced, 2 high quality. options: libplacebo "key=value,key=value", or NULL.
 int bsv_gpu_set_options(bsv_gpu *g, int preset, const char *options);
+
+// Upscaling by a neural network: `shader` is a shader in mpv's format (the text of a .glsl
+// file, `len` bytes) that enlarges the picture before it is fitted to the window; such a shader
+// says itself when it has anything to do. NULL: none. Returns -1 when the text is not a shader.
+int bsv_gpu_set_upscaler(bsv_gpu *g, const char *shader, size_t len);
+
+// Shaders compiled in an earlier run, as bsv_gpu_cache_save gave them: with these the renderer
+// does not compile them again. Give them before the first picture. Returns how many were
+// taken, negative when the data is not a cache.
+int bsv_gpu_cache_load(bsv_gpu *g, const void *data, size_t len);
+// Writes what has been compiled so far into `data`, as far as `size` allows, and returns the
+// size needed (call with size 0 to learn it). The signature changes when the contents do.
+size_t bsv_gpu_cache_save(bsv_gpu *g, void *data, size_t size);
+uint64_t bsv_gpu_cache_signature(bsv_gpu *g);
 
 // Drop every queued frame (after a seek or when the file changes).
 void bsv_gpu_reset(bsv_gpu *g);

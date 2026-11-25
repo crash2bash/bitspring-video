@@ -234,6 +234,8 @@ internal sealed class SignalInfo
     public int OutputBits;
     public double OutputPeak;
     public bool Passthrough;
+    /// <summary>The picture on screen was doubled by the neural network before being fitted to the window.</summary>
+    public bool Upscaled;
 }
 
 internal sealed class SoundInfo
@@ -277,6 +279,8 @@ internal sealed class SettingsInfo
     public double? DisplayPeak;
     public double ReportedPeak;
     public string Quality = "high";
+    /// <summary>"off", "faithful", "restoring": a neural network doubles pictures smaller than the window.</summary>
+    public string Upscaling = "off";
     public bool HardwareDecoding = true;
     /// <summary>A file that is both Dolby Vision and a plain signal is played as Dolby Vision.</summary>
     public bool DolbyVision = true;

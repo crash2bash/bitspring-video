@@ -783,6 +783,30 @@ pub enum Quality {
     High = 2,
 }
 
+/// A neural network that doubles a picture smaller than the window before the renderer fits
+/// it there: ArtCNN (see `shaders/artcnn`), as shaders the renderer runs on the GPU.
+///
+/// Of the network's two sizes this is the small one (C4F16). The large one (C4F32) was tried
+/// on 2026-11-25: on an M4 Max it took four seconds to compile at every start and three to
+/// four times as long for each picture, too long for 60 pictures a second at 1080p, and the
+/// two could not be told apart on the pictures compared.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Upscaler {
+    /// Trained on clean pictures: adds nothing of its own.
+    Faithful,
+    /// Trained on blurred, noisy, compressed pictures: also takes those faults away.
+    Restoring,
+}
+
+impl Upscaler {
+    fn shader(self) -> &'static str {
+        match self {
+            Upscaler::Faithful => include_str!("../shaders/artcnn/ArtCNN_C4F16.glsl"),
+            Upscaler::Restoring => include_str!("../shaders/artcnn/ArtCNN_C4F16_DS.glsl"),
+        }
+    }
+}
+
 /// What the frame queue gets when it asks for another frame.
 pub enum Pull {
     Frame(Frame),
@@ -824,6 +848,13 @@ pub struct RenderStats {
     pub hdr10_plus: bool,
     /// A subtitle was drawn over this frame.
     pub subtitle_shown: bool,
+    /// The picture on screen was doubled by the upscaler: it was on, and the picture is
+    /// enough smaller than the window for it to have something to do.
+    pub upscaled: bool,
+    /// This call drew a picture, rather than showing again one drawn before.
+    pub new_picture: bool,
+    /// What this call's work took on the GPU, in milliseconds, as the GPU last timed it.
+    pub gpu_ms: f32,
     /// The surface the system actually gave us.
     pub output_primaries: Option<Primaries>,
     pub output_transfer: Option<Transfer>,
@@ -981,6 +1012,51 @@ impl Gpu {
         }
     }
 
+    /// Double pictures smaller than the window with a neural network, or (`None`) leave all
+    /// scaling to the renderer's own filter. Takes effect from the next picture drawn.
+    pub fn set_upscaler(&mut self, upscaler: Option<Upscaler>) -> Result<(), Error> {
+        let shader = upscaler.map(Upscaler::shader);
+        let (text, len) = shader.map_or((std::ptr::null(), 0), |s| (s.as_ptr(), s.len()));
+        // SAFETY: the text lives for the whole program; the call reads `len` bytes of it.
+        match unsafe { ffi::bsv_gpu_set_upscaler(self.ptr.as_ptr(), text as *const c_char, len) } {
+            0 => Ok(()),
+            _ => Err(Error("the upscaling shader cannot be read".into())),
+        }
+    }
+
+    /// Take shaders compiled in an earlier run (what [`compiled`](Self::compiled) gave then),
+    /// so that they are not compiled again. Call before the first picture. Data that is not
+    /// such a cache, or is another version's, is left aside.
+    pub fn recall_compiled(&mut self, data: &[u8]) {
+        // SAFETY: the buffer outlives the call, which copies what it takes.
+        unsafe {
+            ffi::bsv_gpu_cache_load(
+                self.ptr.as_ptr(),
+                data.as_ptr() as *const c_void,
+                data.len(),
+            )
+        };
+    }
+
+    /// A mark that changes whenever a shader is compiled that was not known before.
+    pub fn compiled_mark(&self) -> u64 {
+        // SAFETY: plain call on an owned gpu.
+        unsafe { ffi::bsv_gpu_cache_signature(self.ptr.as_ptr()) }
+    }
+
+    /// Every shader compiled so far, for keeping in a file until the next run.
+    pub fn compiled(&self) -> Vec<u8> {
+        // SAFETY: the first call writes nothing; the second writes at most `data.len()` bytes.
+        unsafe {
+            let size = ffi::bsv_gpu_cache_save(self.ptr.as_ptr(), std::ptr::null_mut(), 0);
+            let mut data = vec![0u8; size];
+            let written =
+                ffi::bsv_gpu_cache_save(self.ptr.as_ptr(), data.as_mut_ptr() as *mut c_void, size);
+            data.truncate(written.min(size));
+            data
+        }
+    }
+
     /// Make a font from inside the file available to styled subtitles. Call before
     /// [`begin_subtitles`](Self::begin_subtitles).
     pub fn add_font(&mut self, name: &str, data: &[u8]) {
@@ -1100,6 +1176,9 @@ impl Gpu {
             dolby_vision: c.src_dolby_vision != 0,
             hdr10_plus: c.src_hdr10_plus != 0,
             subtitle_shown: c.subtitle_shown != 0,
+            upscaled: c.upscaled != 0,
+            new_picture: c.new_picture != 0,
+            gpu_ms: c.gpu_ms,
             output_primaries: primaries_from_c(c.out_primaries),
             output_transfer: transfer_from_c(c.out_transfer),
             output_nits: (c.out_min_nits, c.out_max_nits),

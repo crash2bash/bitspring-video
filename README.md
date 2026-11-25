@@ -44,6 +44,10 @@ Early. What works today, on the Mac:
 - Settings, each taking effect on the picture as it is changed: the display's peak brightness
   (its own figure, or yours), rendering quality, hardware decoding; subtitle size, subtitle
   brightness in HDR, preferred subtitle and sound languages; picture delay for lip sync
+- Upscaling by a small neural network ([ArtCNN](https://github.com/Artoriuz/ArtCNN)), off until
+  switched on in settings: a picture smaller than the window is doubled before it is fitted
+  there, either as it is or with what compression left taken away. The signal panel says when
+  it is at work. Tried on SDR and HDR10 at 1080p
 - Pause, seeking, volume, full screen; the display and the machine stay awake while a film
   plays, and are let go on pause
 - A film is picked up where it was left, with the sound and subtitle tracks chosen for it; a
@@ -87,7 +91,8 @@ the signal panel offers the choice, and it is remembered.
 - `crates/display`: what the display can do (EDID parser, macOS and Windows queries) and the
   policy that picks the output signal. Pure Rust, tested.
 - `crates/engine`: decoding (FFmpeg) and rendering (libplacebo over Vulkan; MoltenVK on the Mac).
-  A small C bridge in `c/`, a safe Rust API on top.
+  A small C bridge in `c/`, a safe Rust API on top. `shaders/artcnn` holds the upscaler's
+  shaders as they are in ArtCNN at commit 0837e53, with its licence (MIT) beside them.
 - `crates/audio`: sound output and the playback clock.
 - `crates/player`: the window and the playback threads. A library as well as a program, so
   that the Windows application can carry the same player. `queue.rs` is what plays after what

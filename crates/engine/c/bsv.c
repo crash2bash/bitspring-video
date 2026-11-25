@@ -1291,11 +1291,24 @@ struct bsv_gpu {
     pl_vulkan vk;
 #endif
     pl_gpu gpu;
+    pl_cache cache; // compiled shaders, which the caller keeps in a file between runs
     pl_swapchain sw;
     pl_renderer rr;
     pl_queue queue;
     pl_options opts;
     bool ignore_dovi; // show a Dolby Vision file's base layer as it is, without its RPU
+
+    // Upscaling by a small neural network: a shader in mpv's format that doubles the picture
+    // before the renderer fits it to the window. `upscaler_hook` is what the renderer is
+    // given: the parsed shader with our own functions in front of its, to see what it did.
+    const struct pl_hook *upscaler;
+    struct pl_hook upscaler_hook;
+    const struct pl_hook *hooks[1];
+    bool upscaler_failed;  // the shader could not be built or run here; said once
+    bool frame_begun;      // the renderer drew a picture during this call...
+    bool frame_upscaled;   // ...and the shader gave it a larger one
+    bool upscaled;         // so for the picture on screen
+    uint64_t pass_ns;      // GPU time of the passes run during this call
 
     // Subtitles. Text is drawn by libass; pictures come ready-made from the decoder.
     int subs_kind; // 0 off, 1 text, 2 pictures
@@ -1316,6 +1329,93 @@ struct bsv_gpu {
     float sub_scale; // text size, 1 = as styled
     float sub_nits;  // how bright subtitle white is, cd/m²; 0 = SDR white
 };
+
+// ---- Upscaling ------------------------------------------------------------------------------
+
+// The renderer calls these in place of the shader's own, which they pass everything on to.
+// A picture is drawn once and then kept by the renderer for every refresh it is on screen, so
+// "upscaled" is noted when a picture is drawn and holds until the next one is.
+static void upscaler_reset(void *priv)
+{
+    bsv_gpu *g = priv;
+    if (g->upscaler->reset)
+        g->upscaler->reset(g->upscaler->priv);
+}
+
+static struct pl_hook_res upscaler_run(void *priv, const struct pl_hook_params *params)
+{
+    bsv_gpu *g = priv;
+    struct pl_hook_res res = g->upscaler->hook(g->upscaler->priv, params);
+    if (res.failed) {
+        if (!g->upscaler_failed)
+            emit(2, "the upscaling shader does not run on this graphics card: the picture is scaled the usual way");
+        g->upscaler_failed = true;
+    } else if (res.output == PL_HOOK_SIG_TEX && res.tex && params->tex
+               && res.tex->params.w > params->tex->params.w) {
+        g->frame_upscaled = true;
+    }
+    return res;
+}
+
+// The renderer's options after they were reset or the shader changed: ours is the only hook.
+static void put_upscaler(bsv_gpu *g)
+{
+    g->hooks[0] = &g->upscaler_hook;
+    g->opts->params.hooks = g->hooks;
+    g->opts->params.num_hooks = g->upscaler ? 1 : 0;
+}
+
+static void count_pass(void *priv, const struct pl_render_info *info)
+{
+    bsv_gpu *g = priv;
+    g->pass_ns += info->pass->last;
+    if (info->stage == PL_RENDER_STAGE_FRAME)
+        g->frame_begun = true;
+}
+
+int bsv_gpu_set_upscaler(bsv_gpu *g, const char *shader, size_t len)
+{
+    if (g->upscaler) {
+        const struct pl_hook *old = g->upscaler;
+        g->upscaler = NULL;
+        put_upscaler(g);
+        pl_mpv_user_shader_destroy(&old);
+    }
+    g->upscaled = false;
+    g->upscaler_failed = false;
+    // A shader that failed is left out by the renderer from then on; a new one starts clean.
+    pl_renderer_reset_errors(g->rr, &(struct pl_render_errors) { .errors = PL_RENDER_ERR_HOOKS });
+    // Pictures already drawn are kept by the renderer as they were drawn: draw them again.
+    pl_renderer_flush_cache(g->rr);
+    if (!shader || !len)
+        return 0;
+
+    const struct pl_hook *parsed = pl_mpv_user_shader_parse(g->gpu, shader, len);
+    if (!parsed)
+        return -1;
+    g->upscaler = parsed;
+    g->upscaler_hook = *parsed;
+    g->upscaler_hook.priv = g;
+    g->upscaler_hook.reset = upscaler_reset;
+    g->upscaler_hook.hook = upscaler_run;
+    put_upscaler(g);
+    return 0;
+}
+
+int bsv_gpu_cache_load(bsv_gpu *g, const void *data, size_t len)
+{
+    return pl_cache_load(g->cache, data, len);
+}
+
+size_t bsv_gpu_cache_save(bsv_gpu *g, void *data, size_t size)
+{
+    return pl_cache_save(g->cache, data, size);
+}
+
+uint64_t bsv_gpu_cache_signature(bsv_gpu *g)
+{
+    return pl_cache_signature(g->cache);
+}
 
 // ---- Subtitles on the GPU's side -------------------------------------------------------------
 
@@ -1666,6 +1766,9 @@ void bsv_gpu_destroy(bsv_gpu *g)
     pl_queue_destroy(&g->queue);
     pl_renderer_destroy(&g->rr);
     pl_options_free(&g->opts);
+    pl_mpv_user_shader_destroy(&g->upscaler);
+    if (g->gpu)
+        pl_gpu_set_cache(g->gpu, NULL);
     pl_swapchain_destroy(&g->sw);
 #if defined(_WIN32)
     if (g->composition)
@@ -1681,6 +1784,7 @@ void bsv_gpu_destroy(bsv_gpu *g)
     }
     pl_vk_inst_destroy(&g->inst);
 #endif
+    pl_cache_destroy(&g->cache);
     pl_log_destroy(&g->log);
     free(g);
 }
@@ -1704,6 +1808,13 @@ static bsv_gpu *finish_gpu(bsv_gpu *g, const char *api, char *error, int error_l
         set_error(error, error_len, "cannot create the swapchain", 0);
         goto fail;
     }
+    // Compiling a shader is slow, the upscaler's most of all: what was compiled is kept, and
+    // the caller may carry it from one run to the next (bsv_gpu_cache_load and _save).
+    g->cache = pl_cache_create(pl_cache_params(
+        .log = g->log,
+        .max_total_size = 64 << 20,
+    ));
+    pl_gpu_set_cache(g->gpu, g->cache);
     g->rr = pl_renderer_create(g->log, g->gpu);
     g->queue = pl_queue_create(g->gpu);
     g->opts = pl_options_alloc(g->log);
@@ -1712,6 +1823,8 @@ static bsv_gpu *finish_gpu(bsv_gpu *g, const char *api, char *error, int error_l
         goto fail;
     }
     pl_options_reset(g->opts, &pl_render_high_quality_params);
+    g->opts->params.info_callback = count_pass;
+    g->opts->params.info_priv = g;
     emitf(3, "renderer: libplacebo %s on %s%s", pl_version(), api, g->gpu->glsl.compute ? " (compute)" : "");
     return g;
 
@@ -1887,6 +2000,9 @@ int bsv_gpu_set_options(bsv_gpu *g, int preset, const char *options)
                                           : preset == 2 ? &pl_render_high_quality_params
                                                         : &pl_render_default_params;
     pl_options_reset(g->opts, base);
+    g->opts->params.info_callback = count_pass;
+    g->opts->params.info_priv = g;
+    put_upscaler(g);
     if (options && *options && !pl_options_load(g->opts, options))
         return -1;
     return 0;
@@ -2112,7 +2228,15 @@ int bsv_gpu_render(bsv_gpu *g, double pts, double vsync, const struct bsv_target
     stats->out_min_nits = out.color.hdr.min_luma;
     stats->out_bits = out.repr.bits.color_depth;
 
+    g->pass_ns = 0;
+    g->frame_begun = false;
+    g->frame_upscaled = false;
     bool ok = pl_render_image_mix(g->rr, &mix, &out, params);
+    if (g->frame_begun)
+        g->upscaled = g->frame_upscaled;
+    stats->upscaled = g->upscaler && g->upscaled;
+    stats->new_picture = g->frame_begun;
+    stats->gpu_ms = g->pass_ns / 1e6f;
     if (!pl_swapchain_submit_frame(g->sw))
         ok = false;
     pl_swapchain_swap_buffers(g->sw);

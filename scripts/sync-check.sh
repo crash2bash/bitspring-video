@@ -15,6 +15,10 @@
 # video's own sound is silence, so what is measured is a sound file kept in step with the
 # picture. With SOUND=alone the video has no sound of its own and the file is put on unasked.
 #
+# With SIZE=1920x1080 the clip is that size instead of 3840x2160: small enough for the upscaler
+# to have work to do (add --script "1:set upscaling faithful"), which is how to see that the
+# picture still meets its sound with the network drawing every one of them.
+#
 # The player runs at a volume too low to hear. The terminal needs the Screen Recording
 # permission. Build the app first: scripts/bundle-macos.sh
 set -euo pipefail
@@ -26,11 +30,16 @@ APP="$PWD/target/bundle/BitSpring Video.app"
 WORK="$PWD/target/sync-check"
 mkdir -p "$WORK"
 
+SIZE="${SIZE:-3840x2160}"
+if [ "$SIZE" != 3840x2160 ]; then
+  WORK="$WORK/$SIZE"
+  mkdir -p "$WORK"
+fi
 if [ ! -f "$WORK/sync.mkv" ]; then
   echo "Making the clip"
   BEEP="0.05*sin(2*PI*1000*t)*lt(mod(t\,1.001)\,0.03)"
   ffmpeg -hide_banner -loglevel error -y \
-    -f lavfi -i "color=c=black:s=3840x2160:r=24000/1001:d=90,drawbox=x=0:y=0:w=iw:h=ih:color=white:t=fill:enable='eq(mod(n\,24)\,0)',format=yuv420p10le" \
+    -f lavfi -i "color=c=black:s=$SIZE:r=24000/1001:d=90,drawbox=x=0:y=0:w=iw:h=ih:color=white:t=fill:enable='eq(mod(n\,24)\,0)',format=yuv420p10le" \
     -f lavfi -i "aevalsrc=exprs='$BEEP|$BEEP|$BEEP|0|0|0':c=5.1:s=48000:d=90" \
     -f lavfi -i "aevalsrc=exprs='$BEEP|$BEEP':c=stereo:s=48000:d=90" \
     -map 0:v -map 1:a -map 2:a \

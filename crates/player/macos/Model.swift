@@ -40,6 +40,8 @@ struct SignalInfo: Codable, Equatable {
     var outputBits: Int
     var outputPeak: Double
     var passthrough: Bool
+    /// The picture on screen was doubled by the neural network before being fitted to the window.
+    var upscaled: Bool
 }
 
 struct SoundInfo: Codable, Equatable {
@@ -88,6 +90,8 @@ struct SettingsInfo: Codable, Equatable {
     var reportedPeak: Double
     /// "high", "balanced", "fast".
     var quality: String
+    /// "off", "faithful", "restoring": a neural network doubles pictures smaller than the window.
+    var upscaling: String
     var hardwareDecoding: Bool
     /// A file that is both Dolby Vision and a plain signal is played as Dolby Vision.
     var dolbyVision: Bool
@@ -103,7 +107,7 @@ struct SettingsInfo: Codable, Equatable {
     var autoNext: Bool
 
     static let standard = SettingsInfo(
-        displayPeak: nil, reportedPeak: 0, quality: "high", hardwareDecoding: true, dolbyVision: true,
+        displayPeak: nil, reportedPeak: 0, quality: "high", upscaling: "off", hardwareDecoding: true, dolbyVision: true,
         subtitleScale: 1,
         subtitleNits: 203, subtitleLanguage: "", audioLanguage: "", audioDelay: 0, autoNext: true)
 }

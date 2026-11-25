@@ -228,6 +228,12 @@ public sealed partial class MainWindow
             yield return (L("Colour", "Цвет"), colour);
             yield return (L("Decoding", "Декодер"),
                 v.Hardware ? L("The graphics card's video decoder", "Аппаратный декодер видеокарты") : L("Software", "Программный"));
+            if (s.Signal?.Upscaled == true)
+            {
+                var size = $"{v.Width * 2} × {v.Height * 2}";
+                yield return (L("Scaling", "Масштаб"),
+                    L($"Doubled to {size} by a neural network (ArtCNN)", $"Удвоено до {size} нейросетью (ArtCNN)"));
+            }
         }
         if (s.Signal is SignalInfo o)
         {
@@ -368,6 +374,14 @@ public sealed partial class MainWindow
             Choices(
                 new[] { ("high", L("Best", "Лучшая")), ("balanced", L("Balanced", "Средняя")), ("fast", L("Fast", "Быстрая")) },
                 settings.Quality, value => Set("quality", value)),
+            Text(L("Upscaling", "Апскейлинг"), quiet: true),
+            Choices(
+                new[] { ("off", L("Off", "Выкл")), ("faithful", L("Faithful", "Точный")), ("restoring", L("Restoring", "С очисткой")) },
+                settings.Upscaling, value => Set("upscaling", value)),
+            Text(
+                L("A neural network doubles a picture smaller than the window. Restoring also takes away what compression left.",
+                  "Нейросеть удваивает картинку, которая меньше окна. «С очисткой» заодно убирает следы сжатия."),
+                11, quiet: true),
             Row(L("The graphics card's video decoder", "Аппаратный декодер"), decoder,
                 L("From the next file", "Со следующего файла"))));
 
