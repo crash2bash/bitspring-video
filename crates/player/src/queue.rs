@@ -198,23 +198,54 @@ fn leads_elsewhere(path: &str) -> bool {
     !on_a_disk
 }
 
-/// Whether a path is, by its names, in a folder where a Mac mounts another machine's files
-/// the moment a name under it is asked for: /net and /Network. Letters are compared without
-/// their case, as the Mac's own disks compare them.
-fn mounts_on_demand(path: &Path) -> bool {
-    let names: Vec<String> = path
-        .components()
+/// The folders where a Mac mounts another machine's files the moment a name under them is
+/// asked for, each as its names in small letters: the ones every Mac may have, and whatever
+/// else this one's /etc/auto_master sets up.
+fn mounted_on_demand() -> &'static [Vec<String>] {
+    static FOLDERS: std::sync::OnceLock<Vec<Vec<String>>> = std::sync::OnceLock::new();
+    FOLDERS.get_or_init(|| {
+        let mut folders: Vec<Vec<String>> = ["net", "network", "home"]
+            .iter()
+            .map(|name| vec![name.to_string()])
+            .collect();
+        let configured = std::fs::read_to_string("/etc/auto_master").unwrap_or_default();
+        for line in configured.lines() {
+            // "/home  auto_home  -nobrowse": where, from what, how. "/-" is no folder.
+            let place = line.split_whitespace().next().unwrap_or("");
+            let names = names_of(Path::new(place));
+            if place.starts_with('/') && !names.is_empty() && !folders.contains(&names) {
+                folders.push(names);
+            }
+        }
+        folders
+    })
+}
+
+/// The names in a path, in small letters: a Mac's own disks compare them without their case.
+fn names_of(path: &Path) -> Vec<String> {
+    path.components()
         .filter_map(|part| match part {
             std::path::Component::Normal(name) => Some(name.to_string_lossy().to_lowercase()),
             _ => None,
         })
-        .take(4)
-        .collect();
-    let names: Vec<&str> = names.iter().map(String::as_str).collect();
-    matches!(
-        names.as_slice(),
-        ["net" | "network", ..] | ["system", "volumes", "data", "net" | "network", ..]
-    )
+        .collect()
+}
+
+/// Whether a path is, by its names, in one of the folders that mount other machines.
+fn mounts_on_demand(path: &Path) -> bool {
+    let names = names_of(path);
+    // The same folders are also reached through the name of the disk they are on.
+    let names = match names.as_slice() {
+        [system, volumes, data, rest @ ..]
+            if system == "system" && volumes == "volumes" && data == "data" =>
+        {
+            rest
+        }
+        all => all,
+    };
+    mounted_on_demand()
+        .iter()
+        .any(|folder| names.starts_with(folder))
 }
 
 /// Whether a whole path leads to another machine, going by how it is written.
@@ -229,58 +260,92 @@ fn elsewhere(path: &Path) -> bool {
     {
         return true;
     }
-    leads_elsewhere(&path.to_string_lossy()) || (cfg!(not(windows)) && mounts_on_demand(path))
+    leads_elsewhere(&path.to_string_lossy())
+        || (cfg!(target_os = "macos") && mounts_on_demand(path))
 }
 
-/// Check that a path stays on this machine with every link in it followed. The links are
-/// read, not gone through, and each place is judged by its name before anything is asked
-/// about it, so no connection is made on the way. `false` for a path that leads elsewhere.
+/// One step of a path, kept apart from the path it came from.
+enum Step {
+    /// A disk's name or the root: the path starts again from here.
+    Start(std::ffi::OsString),
+    Up,
+    Name(std::ffi::OsString),
+}
+
+/// The steps of a path, last first, to be taken off the end one at a time.
+fn steps_of(path: &Path) -> Vec<Step> {
+    path.components()
+        .rev()
+        .filter_map(|part| match part {
+            std::path::Component::Prefix(_) | std::path::Component::RootDir => {
+                Some(Step::Start(part.as_os_str().to_os_string()))
+            }
+            std::path::Component::CurDir => None,
+            std::path::Component::ParentDir => Some(Step::Up),
+            std::path::Component::Normal(name) => Some(Step::Name(name.to_os_string())),
+        })
+        .collect()
+}
+
+/// Check that a path stays on this machine with every link in it followed. It is walked the
+/// way the system walks it, one name at a time: a link is read and its own steps taken in
+/// its place, and ".." steps back from where the links before it really led. Each place is
+/// judged by its name before anything is asked about it, so no connection is made on the
+/// way. `false` for a path that leads elsewhere, or that cannot be walked.
 fn stays_here(path: &Path) -> bool {
     /// More links than this in one path is a loop.
     const MOST_LINKS: usize = 40;
-    let mut path = tidy(path);
-    for _ in 0..MOST_LINKS {
-        if elsewhere(&path) {
-            return false;
-        }
-        let mut walked = PathBuf::new();
-        let mut parts = path.components();
-        let mut link = None;
-        for part in parts.by_ref() {
-            walked.push(part.as_os_str());
-            if !matches!(part, std::path::Component::Normal(_)) {
+    let mut ahead = steps_of(path);
+    let mut here = PathBuf::new();
+    let mut links = 0;
+    // Past the last thing that exists there are only names: no links to follow.
+    let mut exists = true;
+    while let Some(step) = ahead.pop() {
+        let name = match step {
+            Step::Start(start) => {
+                here.push(start);
                 continue;
             }
-            match std::fs::symlink_metadata(&walked) {
-                Ok(found) if found.file_type().is_symlink() => {
-                    link = std::fs::read_link(&walked).ok();
-                    if link.is_none() {
-                        // A link that cannot be read is not one to go through.
-                        return false;
-                    }
-                    break;
-                }
-                Ok(_) => {}
-                // Nothing by this name: there is nothing further to follow.
-                Err(_) => return true,
+            Step::Up => {
+                here.pop();
+                continue;
             }
+            Step::Name(name) => name,
+        };
+        here.push(name);
+        if elsewhere(&here) {
+            return false;
         }
-        let Some(target) = link else {
-            return true;
-        };
-        // Windows writes where a folder link leads as "\??\C:\films", or "\??\UNC\server\films".
-        let written = target.to_string_lossy().into_owned();
-        let target = match written.strip_prefix("\\??\\") {
-            Some(rest) if rest.to_ascii_uppercase().starts_with("UNC\\") => return false,
-            Some(rest) => PathBuf::from(rest),
-            None if leads_elsewhere(&written) => return false,
-            None => target,
-        };
-        walked.pop();
-        let rest: PathBuf = parts.collect();
-        path = tidy(&walked.join(target).join(rest));
+        if !exists {
+            continue;
+        }
+        match std::fs::symlink_metadata(&here) {
+            Ok(found) if found.file_type().is_symlink() => {
+                links += 1;
+                let Ok(target) = std::fs::read_link(&here) else {
+                    return false;
+                };
+                // Windows may write where a link leads as "\??\C:\films", or "\??\UNC\server\films".
+                let written = target.to_string_lossy().into_owned();
+                let target = match written.strip_prefix("\\??\\") {
+                    Some(rest) if rest.to_ascii_uppercase().starts_with("UNC\\") => return false,
+                    Some(rest) => PathBuf::from(rest),
+                    None => target,
+                };
+                if links > MOST_LINKS || leads_elsewhere(&target.to_string_lossy()) {
+                    return false;
+                }
+                // The link's own steps come next, from the folder the link is in.
+                here.pop();
+                ahead.extend(steps_of(&target));
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => exists = false,
+            // Not allowed to look, or the disk failed: not a path to go down.
+            Err(_) => return false,
+        }
     }
-    false
+    !elsewhere(&here)
 }
 
 /// A path without its "." and "..", worked out from the names alone: nothing is looked up.
@@ -979,12 +1044,13 @@ mod tests {
         assert!(!leads_elsewhere("\\films\\a.mkv"));
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "macos")]
     #[test]
     fn a_playlist_cannot_reach_folders_that_mount_other_machines() {
         let text = "/net/server/a.mkv\n../net/server/b.mkv\nsub/../../Network/Servers/s/c.mkv\n\
                     /System/Volumes/Data/net/server/d.mkv\n/NET/server/e.mkv\n/network/f.mkv\n\
-                    /system/volumes/DATA/Net/g.mkv\nsub/./h.mkv\n../i.mkv\n/networks/j.mkv\n";
+                    /system/volumes/DATA/Net/g.mkv\nsub/./h.mkv\n../i.mkv\n/networks/j.mkv\n\
+                    /home/someone/k.mkv\n/System/Volumes/Data/Home/someone/l.mkv\n";
         assert_eq!(
             parse_playlist(text, Path::new("/lists")),
             [
@@ -998,7 +1064,7 @@ mod tests {
         assert!(parse_playlist("/net/server/a.mkv\nnet/b.mkv\n", Path::new("")).is_empty());
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "macos")]
     #[test]
     fn a_link_into_such_a_folder_is_not_gone_through() {
         let folder = scratch("links");
@@ -1014,6 +1080,16 @@ mod tests {
         assert!(!stays_here(&folder.join("twice/film.mkv")));
         assert!(!stays_here(&folder.join("near/../away/film.mkv")));
         assert!(!stays_here(&folder.join("round/film.mkv")));
+
+        // ".." after a link steps back from where the link led, not from where it stands:
+        // "deep/.." is /net/server, though by the names alone it would be this folder.
+        std::os::unix::fs::symlink("/net/server/films", folder.join("deep")).unwrap();
+        std::os::unix::fs::symlink("deep/../other", folder.join("sideways")).unwrap();
+        std::os::unix::fs::symlink("near/../real", folder.join("back")).unwrap();
+        assert!(!stays_here(&folder.join("deep/../film.mkv")));
+        assert!(!stays_here(&folder.join("sideways/film.mkv")));
+        assert!(stays_here(&folder.join("back/film.mkv")));
+        assert!(stays_here(&folder.join("near/../real/film.mkv")));
 
         // Read from its file, a playlist gives only what stays here and is there.
         let list = folder.join("list.m3u8");
