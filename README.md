@@ -41,6 +41,18 @@ Early. What works today, on the Mac:
   no sound, or none in the preferred language while the file is in it. The dubbing chosen
   for one episode is played with the next ones of its folder
 - Choosing the sound track and the subtitle track
+- Interlaced video (DVD, television) has its fields made whole (bwdif, in libplacebo), and
+  pixels that are not square (a 16:9 DVD is 720x576) are shown in the shape they were meant
+  to have, the window included. The signal panel says when a video is interlaced
+- The picture's place in the window: another shape (16:9, 4:3, 2.39:1, 1.85:1), cut down to
+  a shape (a scope film kept in 16:9 loses its bars on a 21:9 screen), or filling the window
+  with what does not fit cut away. Kept for the next files until the player is closed
+- Small pictures over the seek bar, of the moment under the pointer: made from the keyframe
+  before it by a reader of their own, so playback does not wait for them
+- A frame saved whole as a PNG in Pictures/BitSpring Video (Cmd+S, Ctrl+S on Windows, or the
+  picture menu), the very picture on screen, at the video's size; HDR is brought down to SDR
+  for it, as for the small pictures (`BSV_PICTURES` names another folder)
+- Picture by picture while paused: comma goes one back, full stop one on
 - Subtitles moved to meet the speech, earlier or later by tenths of a second (up to 30 s
   either way), from the subtitles menu or a key; kept for that file. Subtitles inside the
   video are read ahead by as much as they are moved earlier, so they arrive in time

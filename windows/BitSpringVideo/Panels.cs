@@ -250,6 +250,8 @@ public sealed partial class MainWindow
                 _ => null,
             };
             if (motion != null) yield return (L("Motion", "Движение"), motion);
+            if (s.Signal?.Interlaced == true)
+                yield return (L("Fields", "Поля"), L("Interlaced, made whole", "Чересстрочное, поля склеены"));
         }
         if (s.Signal is SignalInfo o)
         {

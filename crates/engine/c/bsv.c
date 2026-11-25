@@ -756,6 +756,8 @@ static void fill_info(bsv_video *v, const bsv_source *s)
 
     info->width = par->width;
     info->height = par->height;
+    AVRational sar = av_guess_sample_aspect_ratio(s->fmt, s->video, NULL);
+    info->pixel_aspect = sar.num > 0 && sar.den > 0 ? av_q2d(sar) : 1;
     info->bit_depth = desc ? desc->comp[0].depth : 8;
     AVRational rate = av_guess_frame_rate(s->fmt, s->video, NULL);
     info->fps = rate.num > 0 && rate.den > 0 ? av_q2d(rate) : 0;
@@ -1451,6 +1453,343 @@ void *bsv_frame_share(void *avframe)
     return av_frame_clone(avframe);
 }
 
+// ---- Still pictures -------------------------------------------------------------------------
+//
+// A picture of the video taken apart from playback, with a reader and a decoder of its own: the
+// small ones shown over the seek bar, and a frame saved whole. HDR is brought down to SDR here,
+// since a PNG is SDR: the light is mapped below the white of a page with a gentle shoulder, and
+// BT.2020 colour is turned into BT.709.
+
+struct bsv_still {
+    AVFormatContext *fmt;
+    AVStream *st;
+    AVCodecContext *dec;
+    AVPacket *pkt;
+    double origin;
+};
+
+void bsv_still_close(bsv_still *s)
+{
+    if (!s)
+        return;
+    avcodec_free_context(&s->dec);
+    av_packet_free(&s->pkt);
+    avformat_close_input(&s->fmt);
+    av_free(s);
+}
+
+bsv_still *bsv_still_open(const char *path, char *error, int error_len)
+{
+    bsv_still *s = av_mallocz(sizeof(*s));
+    if (!s)
+        return NULL;
+    const AVCodec *codec = NULL;
+    int ret = open_local(&s->fmt, path, NULL);
+    if (ret < 0 || (ret = avformat_find_stream_info(s->fmt, NULL)) < 0) {
+        set_error(error, error_len, "cannot open the file", ret);
+        goto fail;
+    }
+    int index = av_find_best_stream(s->fmt, AVMEDIA_TYPE_VIDEO, -1, -1, &codec, 0);
+    if (index < 0 || !codec) {
+        set_error(error, error_len, "the file has no video", 0);
+        goto fail;
+    }
+    s->st = s->fmt->streams[index];
+    for (unsigned i = 0; i < s->fmt->nb_streams; i++)
+        s->fmt->streams[i]->discard = (int) i == index ? AVDISCARD_DEFAULT : AVDISCARD_ALL;
+    // The same zero as the player's own reading, so a time means the same picture.
+    if (s->fmt->start_time != AV_NOPTS_VALUE)
+        s->origin = s->fmt->start_time / (double) AV_TIME_BASE;
+    s->dec = avcodec_alloc_context3(codec);
+    s->pkt = av_packet_alloc();
+    if (!s->dec || !s->pkt) {
+        set_error(error, error_len, "out of memory", 0);
+        goto fail;
+    }
+    avcodec_parameters_to_context(s->dec, s->st->codecpar);
+    s->dec->pkt_timebase = s->st->time_base;
+    s->dec->thread_count = 0;
+    if ((ret = avcodec_open2(s->dec, codec, NULL)) < 0) {
+        set_error(error, error_len, "cannot start the decoder", ret);
+        goto fail;
+    }
+    return s;
+
+fail:
+    bsv_still_close(s);
+    return NULL;
+}
+
+// The picture at `seconds`: the one on screen then (exact), or the nearest keyframe before.
+static AVFrame *still_decode(bsv_still *s, double seconds, int exact)
+{
+    double unit = av_q2d(s->st->time_base);
+    int64_t ts = llround((seconds + s->origin) / unit);
+    if (avformat_seek_file(s->fmt, s->st->index, INT64_MIN, ts, ts, 0) < 0)
+        return NULL;
+    avcodec_flush_buffers(s->dec);
+    AVFrame *got = av_frame_alloc(), *kept = NULL;
+    bool draining = false;
+    for (int decoded = 0; got && decoded < 1200;) {
+        int ret = avcodec_receive_frame(s->dec, got);
+        if (ret == 0) {
+            decoded++;
+            int64_t when = got->best_effort_timestamp != AV_NOPTS_VALUE ? got->best_effort_timestamp : got->pts;
+            double at = when == AV_NOPTS_VALUE ? seconds : when * unit - s->origin;
+            if (kept && at > seconds + 0.001)
+                break; // the one kept was on screen at `seconds`
+            av_frame_free(&kept);
+            kept = av_frame_clone(got);
+            av_frame_unref(got);
+            if (!exact || at > seconds + 0.001)
+                break;
+            continue;
+        }
+        if (ret == AVERROR_EOF)
+            break;
+        if (ret != AVERROR(EAGAIN))
+            break;
+        if (draining)
+            break;
+        ret = av_read_frame(s->fmt, s->pkt);
+        if (ret < 0) {
+            avcodec_send_packet(s->dec, NULL);
+            draining = true;
+            continue;
+        }
+        if (s->pkt->stream_index == s->st->index)
+            avcodec_send_packet(s->dec, s->pkt);
+        av_packet_unref(s->pkt);
+    }
+    av_frame_free(&got);
+    return kept;
+}
+
+// The frame made `width` x `height` RGB, 16 bits a channel, as it is coded (still PQ or HLG for
+// HDR); woven fields made whole first.
+static AVFrame *still_scale(AVFrame *in, int width, int height)
+{
+    AVFilterGraph *graph = avfilter_graph_alloc();
+    AVFrame *out = av_frame_alloc();
+    AVFilterContext *src = NULL, *sink = NULL, *last = NULL, *f = NULL;
+    char args[256];
+    int ret = graph && out ? 0 : AVERROR(ENOMEM);
+    AVRational sar = in->sample_aspect_ratio.num > 0 ? in->sample_aspect_ratio : (AVRational){ 1, 1 };
+    snprintf(args, sizeof(args), "video_size=%dx%d:pix_fmt=%d:time_base=1/1000:pixel_aspect=%d/%d:colorspace=%d:range=%d",
+             in->width, in->height, in->format, sar.num, sar.den, in->colorspace, in->color_range);
+    if (ret >= 0)
+        ret = avfilter_graph_create_filter(&src, avfilter_get_by_name("buffer"), "in", args, NULL, graph);
+    last = src;
+    if (ret >= 0 && (in->flags & AV_FRAME_FLAG_INTERLACED)) {
+        ret = avfilter_graph_create_filter(&f, avfilter_get_by_name("yadif"), "fields", "mode=send_frame:deint=interlaced", NULL, graph);
+        if (ret >= 0)
+            ret = avfilter_link(last, 0, f, 0);
+        last = f;
+    }
+    if (ret >= 0) {
+        snprintf(args, sizeof(args), "w=%d:h=%d:flags=bicubic", width, height);
+        ret = avfilter_graph_create_filter(&f, avfilter_get_by_name("scale"), "size", args, NULL, graph);
+        if (ret >= 0)
+            ret = avfilter_link(last, 0, f, 0);
+        last = f;
+    }
+    if (ret >= 0) {
+        ret = avfilter_graph_create_filter(&f, avfilter_get_by_name("format"), "rgb", "pix_fmts=rgb48le", NULL, graph);
+        if (ret >= 0)
+            ret = avfilter_link(last, 0, f, 0);
+        last = f;
+    }
+    if (ret >= 0)
+        ret = avfilter_graph_create_filter(&sink, avfilter_get_by_name("buffersink"), "out", NULL, NULL, graph);
+    if (ret >= 0)
+        ret = avfilter_link(last, 0, sink, 0);
+    if (ret >= 0)
+        ret = avfilter_graph_config(graph, NULL);
+    if (ret >= 0) {
+        in->pts = 0;
+        ret = av_buffersrc_add_frame_flags(src, in, AV_BUFFERSRC_FLAG_KEEP_REF);
+    }
+    if (ret >= 0)
+        ret = av_buffersrc_add_frame(src, NULL);
+    if (ret >= 0)
+        ret = av_buffersink_get_frame(sink, out);
+    avfilter_graph_free(&graph);
+    if (ret < 0)
+        av_frame_free(&out);
+    return out;
+}
+
+static float srgb_encode(float v)
+{
+    v = v < 0 ? 0 : v > 1 ? 1 : v;
+    return v <= 0.0031308f ? 12.92f * v : 1.055f * powf(v, 1 / 2.4f) - 0.055f;
+}
+
+// 16-bit RGB as coded into 8-bit sRGB. HDR (PQ, HLG) is turned into light, mapped below the
+// white of an SDR page (203 cd/m²) with highlights eased in up to the content's peak, and its
+// BT.2020 colour into BT.709; SDR is passed as it is.
+static void still_to_sdr(const AVFrame *rgb, uint8_t *out, int out_stride, enum AVColorTransferCharacteristic trc,
+                         enum AVColorPrimaries primaries, float peak_nits)
+{
+    bool pq = trc == AVCOL_TRC_SMPTE2084, hlg = trc == AVCOL_TRC_ARIB_STD_B67;
+    float *light = NULL;
+    if (pq || hlg) {
+        light = av_malloc(65536 * sizeof(float));
+        if (!light)
+            pq = hlg = false;
+    }
+    if (light) {
+        for (int i = 0; i < 65536; i++) {
+            float e = i / 65535.0f;
+            if (pq) {
+                const float m1 = 0.1593017578125f, m2 = 78.84375f, c1 = 0.8359375f, c2 = 18.8515625f, c3 = 18.6875f;
+                float p = powf(e, 1 / m2);
+                light[i] = 10000 * powf(fmaxf(p - c1, 0) / (c2 - c3 * p), 1 / m1);
+            } else {
+                // Scene light; the system gamma of a 1000 cd/m² display is applied per pixel below.
+                const float a = 0.17883277f, b = 0.28466892f, c = 0.55991073f;
+                light[i] = e <= 0.5f ? e * e / 3 : (expf((e - c) / a) + b) / 12;
+            }
+        }
+    }
+    const float white = 203;
+    float top = (peak_nits > white ? peak_nits : 1000) / white;
+    bool wide = primaries == AVCOL_PRI_BT2020 || pq || hlg;
+    for (int y = 0; y < rgb->height; y++) {
+        const uint16_t *row = (const uint16_t *) (rgb->data[0] + (size_t) y * rgb->linesize[0]);
+        uint8_t *dst = out + (size_t) y * out_stride;
+        for (int x = 0; x < rgb->width; x++) {
+            if (!light) {
+                dst[3 * x] = row[3 * x] >> 8;
+                dst[3 * x + 1] = row[3 * x + 1] >> 8;
+                dst[3 * x + 2] = row[3 * x + 2] >> 8;
+                continue;
+            }
+            float r = light[row[3 * x]], g = light[row[3 * x + 1]], b = light[row[3 * x + 2]];
+            if (hlg) {
+                float ys = 0.2627f * r + 0.6780f * g + 0.0593f * b;
+                float k = 1000 * powf(fmaxf(ys, 1e-6f), 0.2f);
+                r *= k, g *= k, b *= k;
+            }
+            r /= white, g /= white, b /= white;
+            // The brightest channel is eased under 1, the others kept in proportion: hue stays.
+            float m = fmaxf(r, fmaxf(g, b));
+            if (m > 0) {
+                float eased = m * (1 + m / (top * top)) / (1 + m);
+                float k = eased / m;
+                r *= k, g *= k, b *= k;
+            }
+            if (wide) {
+                float r7 = 1.6605f * r - 0.5876f * g - 0.0728f * b;
+                float g7 = -0.1246f * r + 1.1329f * g - 0.0083f * b;
+                float b7 = -0.0182f * r - 0.1006f * g + 1.1187f * b;
+                r = r7, g = g7, b = b7;
+            }
+            dst[3 * x] = (uint8_t) lroundf(srgb_encode(r) * 255);
+            dst[3 * x + 1] = (uint8_t) lroundf(srgb_encode(g) * 255);
+            dst[3 * x + 2] = (uint8_t) lroundf(srgb_encode(b) * 255);
+        }
+    }
+    av_free(light);
+}
+
+static int write_png(const uint8_t *rgb, int width, int height, const char *path)
+{
+    const AVCodec *codec = avcodec_find_encoder(AV_CODEC_ID_PNG);
+    AVCodecContext *enc = codec ? avcodec_alloc_context3(codec) : NULL;
+    AVFrame *frame = av_frame_alloc();
+    AVPacket *pkt = av_packet_alloc();
+    int ret = enc && frame && pkt ? 0 : AVERROR(ENOMEM);
+    if (ret >= 0) {
+        enc->width = width;
+        enc->height = height;
+        enc->pix_fmt = AV_PIX_FMT_RGB24;
+        enc->time_base = (AVRational){ 1, 25 };
+        ret = avcodec_open2(enc, codec, NULL);
+    }
+    if (ret >= 0) {
+        frame->format = AV_PIX_FMT_RGB24;
+        frame->width = width;
+        frame->height = height;
+        frame->data[0] = (uint8_t *) rgb;
+        frame->linesize[0] = width * 3;
+        ret = avcodec_send_frame(enc, frame);
+    }
+    if (ret >= 0)
+        ret = avcodec_send_frame(enc, NULL);
+    if (ret >= 0)
+        ret = avcodec_receive_packet(enc, pkt);
+    if (ret >= 0) {
+        // Written beside and then put in place, so nobody reads half a file.
+        char *part = av_asprintf("%s.part", path);
+        FILE *f = part ? fopen(part, "wb") : NULL;
+        if (!f || fwrite(pkt->data, 1, pkt->size, f) != (size_t) pkt->size)
+            ret = AVERROR(EIO);
+        if (f && fclose(f) != 0)
+            ret = AVERROR(EIO);
+#if defined(_WIN32)
+        if (ret >= 0)
+            remove(path);
+#endif
+        if (ret >= 0 && rename(part, path) != 0)
+            ret = AVERROR(EIO);
+        if (ret < 0 && part)
+            remove(part);
+        av_free(part);
+    }
+    av_packet_free(&pkt);
+    av_frame_free(&frame);
+    avcodec_free_context(&enc);
+    return ret;
+}
+
+int bsv_still_save(bsv_still *s, double seconds, int width, int exact, const char *path, char *error, int error_len)
+{
+    AVFrame *frame = still_decode(s, seconds, exact);
+    if (!frame) {
+        set_error(error, error_len, "no picture there", 0);
+        return -1;
+    }
+    // As shown: pixels that are not square (a DVD, HDV) made so.
+    double sar = frame->sample_aspect_ratio.num > 0 ? av_q2d(frame->sample_aspect_ratio) : 1;
+    double shown_w = frame->width * sar, shown_h = frame->height;
+    int w = width > 0 ? width : (int) lround(shown_w);
+    int h = (int) lround(w * shown_h / shown_w);
+    w += w & 1, h += h & 1;
+
+    float peak = 0;
+    const AVFrameSideData *sd = av_frame_get_side_data(frame, AV_FRAME_DATA_CONTENT_LIGHT_LEVEL);
+    if (sd)
+        peak = ((const AVContentLightMetadata *) sd->data)->MaxCLL;
+    if (!peak && (sd = av_frame_get_side_data(frame, AV_FRAME_DATA_MASTERING_DISPLAY_METADATA))) {
+        const AVMasteringDisplayMetadata *m = (const AVMasteringDisplayMetadata *) sd->data;
+        if (m->has_luminance)
+            peak = av_q2d(m->max_luminance);
+    }
+    enum AVColorTransferCharacteristic trc = frame->color_trc;
+    enum AVColorPrimaries primaries = frame->color_primaries;
+
+    AVFrame *rgb = still_scale(frame, w, h);
+    av_frame_free(&frame);
+    if (!rgb) {
+        set_error(error, error_len, "cannot convert the picture", 0);
+        return -1;
+    }
+    uint8_t *pixels = av_malloc((size_t) rgb->width * rgb->height * 3);
+    int ret = pixels ? 0 : AVERROR(ENOMEM);
+    if (pixels) {
+        still_to_sdr(rgb, pixels, rgb->width * 3, trc, primaries, peak);
+        ret = write_png(pixels, rgb->width, rgb->height, path);
+    }
+    av_free(pixels);
+    av_frame_free(&rgb);
+    if (ret < 0) {
+        set_error(error, error_len, "cannot write the picture", ret);
+        return -1;
+    }
+    return 0;
+}
+
 // ---- Sound at another speed --------------------------------------------------------------
 //
 // FFmpeg's atempo: the sound is cut into short overlapping pieces that are laid down closer
@@ -1607,6 +1946,10 @@ struct bsv_gpu {
     bool sub_ready;
     float sub_lift; // pixels at the bottom of the window that subtitles keep clear of
     double sub_delay; // seconds subtitles are shown after the moment they are timed for
+    // How the picture is placed: a shape other than its own (width over height, 0 for its
+    // own), a shape it is cut down to (0 for none), and whether it fills the window.
+    double shape, cut;
+    bool fill;
     float sub_scale; // text size, 1 = as styled
     float sub_nits;  // how bright subtitle white is, cd/m²; 0 = SDR white
 };
@@ -2113,6 +2456,8 @@ static bsv_gpu *finish_gpu(bsv_gpu *g, const char *api, char *error, int error_l
     pl_options_reset(g->opts, &pl_render_high_quality_params);
     g->opts->params.info_callback = count_pass;
     g->opts->params.info_priv = g;
+    // Interlaced video (DVD, television) is made whole; progressive video is not touched.
+    g->opts->params.deinterlace_params = &pl_deinterlace_default_params;
     emitf(3, "renderer: libplacebo %s on %s%s", pl_version(), api, g->gpu->glsl.compute ? " (compute)" : "");
     return g;
 
@@ -2290,10 +2635,72 @@ int bsv_gpu_set_options(bsv_gpu *g, int preset, const char *options)
     pl_options_reset(g->opts, base);
     g->opts->params.info_callback = count_pass;
     g->opts->params.info_priv = g;
+    // Interlaced video (DVD, television) is made whole; progressive video is not touched.
+    g->opts->params.deinterlace_params = &pl_deinterlace_default_params;
     put_upscaler(g);
     if (options && *options && !pl_options_load(g->opts, options))
         return -1;
     return 0;
+}
+
+void bsv_gpu_set_picture(bsv_gpu *g, double shape, double cut, int fill)
+{
+    g->shape = shape > 0 ? shape : 0;
+    g->cut = cut > 0 ? cut : 0;
+    g->fill = fill != 0;
+    // Pictures drawn for the old placing are not to be shown again.
+    pl_renderer_flush_cache(g->rr);
+}
+
+// Keep `keep` of the picture's part `src` across its middle (`across`) or down it.
+static void keep_middle(struct pl_rect2df *src, bool across, double keep)
+{
+    if (across) {
+        float c = (src->x0 + src->x1) / 2, half = (float) ((src->x1 - src->x0) * keep / 2);
+        src->x0 = c - half, src->x1 = c + half;
+    } else {
+        float c = (src->y0 + src->y1) / 2, half = (float) ((src->y1 - src->y0) * keep / 2);
+        src->y0 = c - half, src->y1 = c + half;
+    }
+}
+
+// Where the picture goes in the window, and which part of it: its own shape (pixels that are
+// not square made so), or the shape asked for; cut down to a shape; and, to fill the window,
+// cut at the sides or the top and bottom. `src` is the part of the picture shown.
+static void place_picture(const bsv_gpu *g, const struct pl_frame *ref, struct pl_rect2df *src, struct pl_rect2df *dst)
+{
+    *src = ref->crop;
+    float w = fabsf(src->x1 - src->x0), h = fabsf(src->y1 - src->y0);
+    float dw = fabsf(dst->x1 - dst->x0), dh = fabsf(dst->y1 - dst->y0);
+    if (w <= 0 || h <= 0 || dw <= 0 || dh <= 0)
+        return;
+    double par = ref->pixel_aspect_ratio > 0 ? ref->pixel_aspect_ratio : 1;
+    double shape = g->shape > 0 ? g->shape : w * par / h;
+    // Turned a quarter, the picture's width runs down the screen.
+    bool turned = ref->rotation % 2 != 0;
+    if (g->cut > 0 && fabs(g->cut - shape) > 0.01) {
+        if (g->cut > shape)
+            keep_middle(src, false, shape / g->cut); // wider: the bars above and below go
+        else
+            keep_middle(src, true, g->cut / shape); // narrower: the bars at the sides go
+        shape = g->cut;
+    }
+    double on_screen = turned ? 1 / shape : shape;
+    double window = dw / dh;
+    if (g->fill && fabs(window - on_screen) > 0.001) {
+        // What does not fit goes: at the sides of a wider picture, top and bottom of a taller one.
+        bool sides = on_screen > window;
+        keep_middle(src, sides != turned, sides ? window / on_screen : on_screen / window);
+        on_screen = window;
+    }
+    float cx = (dst->x0 + dst->x1) / 2, cy = (dst->y0 + dst->y1) / 2;
+    float fw = dw, fh = dh;
+    if (on_screen > window)
+        fh = (float) (dw / on_screen);
+    else
+        fw = (float) (dh * on_screen);
+    dst->x0 = cx - fw / 2, dst->x1 = cx + fw / 2;
+    dst->y0 = cy - fh / 2, dst->y1 = cy + fh / 2;
 }
 
 void bsv_gpu_set_dolby_vision(bsv_gpu *g, int use)
@@ -2500,7 +2907,27 @@ int bsv_gpu_render(bsv_gpu *g, double pts, double vsync, const struct bsv_target
         // The range libplacebo maps into. For passthrough it equals the source's, so nothing moves.
         out.color.hdr = signal.hdr;
     }
-    pl_rect2df_aspect_copy_rot(&out.crop, &ref->crop, 0.0, ref->rotation);
+    // The frames of the mix are copied when part of the picture is cut away: the queue's own
+    // are not to be changed.
+    struct pl_frame cut_frames[16];
+    const struct pl_frame *cut_refs[16];
+    bool plain = !g->shape && !g->cut && !g->fill &&
+                 (ref->pixel_aspect_ratio <= 0 || fabsf(ref->pixel_aspect_ratio - 1) < 0.001f);
+    if (plain) {
+        pl_rect2df_aspect_copy_rot(&out.crop, &ref->crop, 0.0, ref->rotation);
+    } else {
+        struct pl_rect2df src;
+        place_picture(g, ref, &src, &out.crop);
+        if (mix.num_frames <= 16) {
+            for (int i = 0; i < mix.num_frames; i++) {
+                cut_frames[i] = *mix.frames[i];
+                cut_frames[i].crop = src;
+                cut_refs[i] = &cut_frames[i];
+            }
+            mix.frames = cut_refs;
+        }
+    }
+    stats->interlaced = ref->first_field != PL_FIELD_NONE;
 
     struct pl_overlay subtitle;
     struct pl_overlay_part subtitle_part;

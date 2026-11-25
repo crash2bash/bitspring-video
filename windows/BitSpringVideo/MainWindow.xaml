@@ -111,6 +111,22 @@
             </StackPanel>
         </Border>
 
+        <!-- A small picture of the moment under the pointer, over the seek bar. -->
+        <StackPanel
+            x:Name="PreviewPane"
+            Visibility="Collapsed"
+            HorizontalAlignment="Left"
+            VerticalAlignment="Bottom"
+            Spacing="6"
+            IsHitTestVisible="False">
+            <Border CornerRadius="10" BorderThickness="1" BorderBrush="#38E8EDEA" Width="176">
+                <Image x:Name="PreviewImage" Stretch="Uniform" />
+            </Border>
+            <Border HorizontalAlignment="Center" Height="26" Padding="10,0" CornerRadius="13" Background="{StaticResource GlassBrush}">
+                <TextBlock x:Name="PreviewTime" FontSize="13" VerticalAlignment="Center" Foreground="{StaticResource PorcelainBrush}" />
+            </Border>
+        </StackPanel>
+
         <!-- What a key just changed, said for a moment in the same place. -->
         <Border
             x:Name="KeyNote"
@@ -195,6 +211,7 @@
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="Auto" />
@@ -297,7 +314,11 @@
                     <Button x:Name="SoundButton" Grid.Column="11" Style="{StaticResource OnGlass}">
                         <FontIcon Glyph="&#xE8D6;" FontSize="15" />
                     </Button>
-                    <Button x:Name="FullscreenButton" Grid.Column="12" Style="{StaticResource OnGlass}" Click="OnFullscreenClick">
+                    <!-- How the picture sits in the window, and a frame of it to keep. -->
+                    <Button x:Name="PictureButton" Grid.Column="12" Style="{StaticResource OnGlass}">
+                        <FontIcon Glyph="&#xE9A6;" FontSize="15" />
+                    </Button>
+                    <Button x:Name="FullscreenButton" Grid.Column="13" Style="{StaticResource OnGlass}" Click="OnFullscreenClick">
                         <FontIcon x:Name="FullscreenGlyph" Glyph="&#xE740;" FontSize="14" />
                     </Button>
                 </Grid>

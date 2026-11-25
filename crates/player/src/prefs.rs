@@ -286,3 +286,35 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 }
+
+/// The user's own folder of pictures, where saved frames go: a folder of the player's own
+/// inside it (`BSV_PICTURES` names another).
+pub fn pictures_folder() -> std::path::PathBuf {
+    // Elsewhere for trying it out, so that test runs leave nothing among the user's pictures.
+    if let Some(folder) = std::env::var_os("BSV_PICTURES") {
+        return folder.into();
+    }
+    let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    home.join("Pictures").join("BitSpring Video")
+}
+
+/// A file name for a frame of `video` at `seconds`: "Film 1.02.03.png", with a number added
+/// when there is one of that name already.
+pub fn frame_file(video: &str, seconds: f64) -> std::path::PathBuf {
+    let stem = std::path::Path::new(video)
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "Frame".into());
+    let s = seconds.max(0.0) as u64;
+    let at = format!("{}.{:02}.{:02}", s / 3600, s / 60 % 60, s % 60);
+    let folder = pictures_folder();
+    let mut file = folder.join(format!("{stem} {at}.png"));
+    let mut n = 2;
+    while file.exists() {
+        file = folder.join(format!("{stem} {at} ({n}).png"));
+        n += 1;
+    }
+    file
+}

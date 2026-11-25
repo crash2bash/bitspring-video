@@ -81,6 +81,12 @@ pub enum Request {
     SpeedBy(f64),
     /// Subtitles this many seconds later (negative: earlier) than they are now.
     SubtitleDelayBy(f64),
+    /// Make a small picture of the video near this time, for over the seek bar.
+    Thumbnail(f64),
+    /// Save the picture on screen, whole, among the user's pictures.
+    SaveFrame,
+    /// Place the picture in the window another way.
+    Picture(PictureChange),
     /// Play the file at this place in the list.
     Play(usize),
     /// Take the file at this place out of the list.
@@ -91,6 +97,15 @@ pub enum Request {
     Save(String),
     ToggleFullscreen,
     ExitFullscreen,
+}
+
+/// One thing changed about how the picture is placed.
+pub enum PictureChange {
+    /// Width over height to show it at; `None` for its own.
+    Shape(Option<f64>),
+    /// A shape to cut it down to; `None` for none.
+    Cut(Option<f64>),
+    Fill(bool),
 }
 
 /// Read one command as the interface writes it: "toggle-pause", "seek-to 12.5", "open <path>".
@@ -141,6 +156,12 @@ pub fn parse(text: &str) -> Option<Request> {
         "speed-by" => Request::SpeedBy(number()?),
         "subtitle-delay" => Request::Player(Command::SetSubtitleDelay(number()?)),
         "subtitle-delay-by" => Request::SubtitleDelayBy(number()?),
+        "thumbnail" => Request::Thumbnail(number()?),
+        "save-frame" => Request::SaveFrame,
+        "step" => Request::Player(Command::Step(number()? as i32)),
+        "picture-shape" => Request::Picture(PictureChange::Shape(number().filter(|a| *a > 0.0))),
+        "picture-cut" => Request::Picture(PictureChange::Cut(number().filter(|a| *a > 0.0))),
+        "picture-fill" => Request::Picture(PictureChange::Fill(argument.trim() == "1")),
         "skip-next" => Request::Skip(1),
         "skip-previous" => Request::Skip(-1),
         "queue-play" => Request::Play(place()?),
@@ -252,6 +273,13 @@ pub struct State {
     speed: f64,
     /// Seconds subtitles are shown late (negative: early).
     subtitle_delay: f64,
+    picture: PictureState,
+    /// The latest small picture made for over the seek bar.
+    thumbnail: Option<ThumbnailState>,
+    /// Frames saved so far, and the last one's file (or why it could not be saved).
+    saved_frames: u32,
+    saved_frame: Option<String>,
+    saved_frame_error: Option<String>,
     fullscreen: bool,
     mode: &'static str,
     video: Option<VideoState>,
@@ -292,6 +320,23 @@ struct SettingsState {
     audio_language: String,
     audio_delay: f32,
     auto_next: bool,
+}
+
+#[derive(Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct PictureState {
+    /// Width over height it is shown at; 0 for its own.
+    shape: f64,
+    /// The shape it is cut down to; 0 for none.
+    cut: f64,
+    fill: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ThumbnailState {
+    at: f64,
+    path: String,
 }
 
 #[derive(Serialize)]
@@ -368,6 +413,8 @@ struct SignalState {
     passthrough: bool,
     /// The picture on screen was doubled by the neural network before being fitted to the window.
     upscaled: bool,
+    /// The video is interlaced, and its fields are made whole before they are shown.
+    interlaced: bool,
     /// Frames in between: "off", "on", "unsuited" (not for this video), "slow" (given up),
     /// "unavailable" (the method does not run on this machine).
     in_between: &'static str,
@@ -508,6 +555,11 @@ impl State {
                 muted,
                 speed: 1.0,
                 subtitle_delay: 0.0,
+                picture: PictureState::default(),
+                thumbnail: None,
+                saved_frames: 0,
+                saved_frame: None,
+                saved_frame_error: None,
                 fullscreen,
                 mode: mode_name(mode),
                 video: None,
@@ -573,6 +625,7 @@ impl State {
                 output_peak: stats.output_nits.1,
                 passthrough: output.passthrough && transfer != Transfer::Sdr,
                 upscaled: stats.upscaled,
+                interlaced: stats.interlaced,
                 in_between: match status.in_between {
                     playback::InBetween::Off => "off",
                     playback::InBetween::On => "on",
@@ -610,6 +663,18 @@ impl State {
             speed: status.speed,
             // Whole hundredths: the steps the keys take are tenths.
             subtitle_delay: (status.subtitle_delay * 100.0).round() / 100.0,
+            picture: PictureState {
+                shape: status.picture.shape.unwrap_or(0.0),
+                cut: status.picture.cut.unwrap_or(0.0),
+                fill: status.picture.fill,
+            },
+            thumbnail: status.thumbnail.as_ref().map(|(at, path)| ThumbnailState {
+                at: *at,
+                path: path.clone(),
+            }),
+            saved_frames: status.saved_frames,
+            saved_frame: status.saved_frame.clone().and_then(Result::ok),
+            saved_frame_error: status.saved_frame.clone().and_then(Result::err),
             fullscreen,
             mode: mode_name(status.mode),
             video,

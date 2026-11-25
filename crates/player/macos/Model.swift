@@ -42,6 +42,8 @@ struct SignalInfo: Codable, Equatable {
     var passthrough: Bool
     /// The picture on screen was doubled by the neural network before being fitted to the window.
     var upscaled: Bool
+    /// The video is interlaced; its fields are made whole before they are shown.
+    var interlaced: Bool
     /// Frames in between: "off", "on", "unsuited" (not for this video), "slow" (given up),
     /// "unavailable" (the method does not run on this machine).
     var inBetween: String
@@ -72,6 +74,21 @@ struct TrackInfo: Codable, Equatable, Identifiable {
     var forced: Bool
     var hearingImpaired: Bool
     var pictures: Bool
+}
+
+/// How the picture is placed in the window.
+struct PictureInfo: Codable, Equatable {
+    /// Width over height it is shown at; 0 for its own.
+    var shape: Double
+    /// The shape it is cut down to; 0 for none.
+    var cut: Double
+    var fill: Bool
+}
+
+/// A small picture of the video, for over the seek bar.
+struct ThumbnailInfo: Codable, Equatable {
+    var at: Double
+    var path: String
 }
 
 /// A chapter of the file.
@@ -163,6 +180,13 @@ struct Status: Codable, Equatable {
     var speed: Double
     /// Seconds subtitles are shown late (negative: early).
     var subtitleDelay: Double
+    var picture: PictureInfo
+    /// The latest small picture made for over the seek bar.
+    var thumbnail: ThumbnailInfo?
+    /// Frames saved so far, and the last one's file or why it could not be saved.
+    var savedFrames: Int
+    var savedFrame: String?
+    var savedFrameError: String?
     var fullscreen: Bool
     /// "auto", "passthrough", "sdr".
     var mode: String
@@ -185,7 +209,8 @@ struct Status: Codable, Equatable {
     static let empty = Status(
         file: nil, error: nil, position: 0, duration: 0, paused: false, ended: false,
         resumedFrom: nil, volume: 1,
-        muted: false, speed: 1, subtitleDelay: 0, fullscreen: false, mode: "auto", video: nil, signal: nil, sound: nil,
+        muted: false, speed: 1, subtitleDelay: 0, picture: PictureInfo(shape: 0, cut: 0, fill: false),
+        thumbnail: nil, savedFrames: 0, savedFrame: nil, savedFrameError: nil, fullscreen: false, mode: "auto", video: nil, signal: nil, sound: nil,
         audioTracks: [], subtitleTracks: [], audioTrack: nil, subtitleTrack: nil,
         chapters: [], chapter: nil,
         display: DisplayInfo(name: "", hdr: "unsupported", peak: 0, min: nil, headroom: 1, peakKnown: false),
@@ -328,12 +353,44 @@ final class PlayerModel: ObservableObject {
         }
     }
 
+    /// Small pictures over the seek bar, by their file, once read.
+    private var thumbnails: [String: NSImage] = [:]
+    private var thumbnailAsked: (at: Double, when: Date) = (-1, .distantPast)
+
+    /// The pointer is over the seek bar at `seconds` (nil: it left). A small picture of that
+    /// moment is asked for, a few times a second at most and only once it has moved on.
+    func pointing(at seconds: Double?) {
+        guard let seconds, status.duration > 0 else { return }
+        let step = max(status.duration / 300, 1)
+        if abs(seconds - thumbnailAsked.at) < step / 2 || Date().timeIntervalSince(thumbnailAsked.when) < 0.08 {
+            return
+        }
+        thumbnailAsked = (seconds, Date())
+        send("thumbnail \(seconds)")
+    }
+
+    /// The latest small picture made, if there is one yet.
+    var thumbnail: NSImage? {
+        guard let path = status.thumbnail?.path else { return nil }
+        if let image = thumbnails[path] { return image }
+        guard let image = NSImage(contentsOfFile: path) else { return nil }
+        if thumbnails.count > 400 { thumbnails.removeAll() }
+        thumbnails[path] = image
+        return image
+    }
+
     func update(_ new: Status) {
+        if new.file != status.file { thumbnails.removeAll(); thumbnailAsked = (-1, .distantPast) }
         if let target = seekTarget, abs(new.position - target) < 1.0 { seekTarget = nil }
         // Changed while the same file plays: by a key, a menu, the system's controls.
         if new.file != nil, new.file == status.file {
             if new.speed != status.speed { say(speedNote(new.speed)) }
             if new.subtitleDelay != status.subtitleDelay { say(subtitleDelayNote(new.subtitleDelay)) }
+            if new.savedFrames != status.savedFrames {
+                say(new.savedFrameError == nil
+                    ? L("Frame saved to Pictures", "Кадр сохранён в «Изображения»")
+                    : L("The frame could not be saved", "Кадр не сохранился"))
+            }
         }
         let wasPlaying = isPlaying
         if new != status { status = new }

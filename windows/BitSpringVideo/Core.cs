@@ -143,6 +143,13 @@ internal sealed class PlayerState
     public double Speed = 1;
     /// <summary>Seconds subtitles are shown late (negative: early).</summary>
     public double SubtitleDelay;
+    public PictureInfo Picture = new();
+    /// <summary>The latest small picture made for over the seek bar.</summary>
+    public ThumbnailInfo? Thumbnail;
+    /// <summary>Frames saved so far, and the last one's file or why it could not be saved.</summary>
+    public int SavedFrames;
+    public string? SavedFrame;
+    public string? SavedFrameError;
     public bool Fullscreen;
     public string Mode = "auto";
     public VideoInfo? Video;
@@ -257,6 +264,8 @@ internal sealed class SignalInfo
     /// <summary>Frames in between: "off", "on", "unsuited" (not for this video), "slow" (given up),
     /// "unavailable" (the method does not run on this machine).</summary>
     public string InBetween = "off";
+    /// <summary>The video is interlaced; its fields are made whole before they are shown.</summary>
+    public bool Interlaced;
 }
 
 internal sealed class SoundInfo
@@ -283,6 +292,21 @@ internal sealed class TrackInfo
     public bool Forced;
     public bool HearingImpaired;
     public bool Pictures;
+}
+
+internal sealed class PictureInfo
+{
+    /// <summary>Width over height it is shown at; 0 for its own.</summary>
+    public double Shape;
+    /// <summary>The shape it is cut down to; 0 for none.</summary>
+    public double Cut;
+    public bool Fill;
+}
+
+internal sealed class ThumbnailInfo
+{
+    public double At;
+    public string Path = "";
 }
 
 internal sealed class ChapterInfo

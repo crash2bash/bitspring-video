@@ -264,8 +264,13 @@ pub fn signal_path(
     } else {
         ""
     };
+    let fields = if stats.interlaced {
+        "; interlaced, its fields made whole"
+    } else {
+        ""
+    };
     format!(
-        "{source}  ->  {got} ({how}; {decode}{upscaled}; mode: {})",
+        "{source}  ->  {got} ({how}; {decode}{fields}{upscaled}; mode: {})",
         mode.label()
     )
 }

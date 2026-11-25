@@ -31,7 +31,7 @@ use crate::sidecars::{self, Sidecar};
 use bsv_engine::{
     AudioDecoder, AudioInfo, Between, Chapter, Decoded, Frame, Gpu, Interpolation, Interpolator, MediaInfo,
     Packet, Pull, Quality, Read, RenderStats, RenderStatus, Source, SubtitleDecoder, SubtitleEvent,
-    SubtitleKind, Tempo, Track, TrackKind, Upscaler, VideoDecoder,
+    Still, SubtitleKind, Tempo, Track, TrackKind, Upscaler, VideoDecoder,
 };
 
 /// Decoded frames waiting for the renderer. A 4K 10-bit frame is about 25 MB.
@@ -86,6 +86,8 @@ pub struct Options {
     pub speed: f64,
     /// Seconds subtitles are shown after the moment they are timed for (negative: before).
     pub subtitle_delay: f64,
+    /// How the picture is placed in the window.
+    pub picture: Picture,
     /// 0.0 to 1.0.
     pub volume: f32,
     pub muted: bool,
@@ -148,6 +150,10 @@ pub enum Command {
     SetSpeed(f64),
     /// Show subtitles this many seconds after the moment they are timed for (negative: before).
     SetSubtitleDelay(f64),
+    /// One picture on (1) or back (-1), paused.
+    Step(i32),
+    /// Place the picture in the window this way.
+    SetPicture(Picture),
     /// Show the subtitles of this file, which may be anywhere: it was opened by hand.
     AddSubtitles(String),
     /// Play the sound of this file with the picture; it too was opened by hand.
@@ -187,6 +193,12 @@ pub struct Status {
     pub speed: f64,
     /// Seconds subtitles are shown late (negative: early).
     pub subtitle_delay: f64,
+    pub picture: Picture,
+    /// The latest small picture asked for over the seek bar: its time, and the PNG it is in.
+    pub thumbnail: Option<(f64, String)>,
+    /// The frames saved whole so far, and where the last went (or why it could not be).
+    pub saved_frames: u32,
+    pub saved_frame: Option<Result<String, String>>,
     /// Gaps in the sound since the start: the device wanted samples that were not ready.
     pub underruns: u64,
     /// Whether frames in between are being made for this video, and what one takes to make,
@@ -208,6 +220,100 @@ pub struct Player {
     commands: Sender<Command>,
     status: Arc<Mutex<Status>>,
     thread: Option<JoinHandle<()>>,
+    /// Pictures taken apart from playback, on a thread of their own.
+    stills: Option<Sender<StillJob>>,
+    stills_thread: Option<JoinHandle<()>>,
+}
+
+/// How the picture is placed in the window.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Picture {
+    /// Width over height to show it at; `None` for its own.
+    pub shape: Option<f64>,
+    /// A shape to cut it down to: 2.39 takes away the bars above and below a scope film.
+    pub cut: Option<f64>,
+    /// Fill the window, cutting what does not fit.
+    pub fill: bool,
+}
+
+enum StillJob {
+    /// A small picture for over the seek bar, near this time.
+    Thumbnail(f64),
+    /// The picture on screen at this time, whole, to this file.
+    Save(f64, std::path::PathBuf),
+}
+
+/// Width of the small pictures over the seek bar, in pixels: twice what they are shown at.
+const THUMBNAIL_WIDTH: u32 = 320;
+
+/// The thread that takes pictures apart from playback. Small ones are made from the keyframe
+/// before the time asked for and kept in `folder` for as long as the file is open; only the
+/// latest one asked for is made, the pointer having moved on from the others.
+fn stills_loop(path: String, folder: std::path::PathBuf, jobs: Receiver<StillJob>, status: Arc<Mutex<Status>>) {
+    let mut still: Option<Still> = None;
+    let mut waiting: VecDeque<StillJob> = VecDeque::new();
+    loop {
+        if waiting.is_empty() {
+            match jobs.recv() {
+                Ok(job) => waiting.push_back(job),
+                Err(_) => return,
+            }
+        }
+        while let Ok(job) = jobs.try_recv() {
+            waiting.push_back(job);
+        }
+        // A frame to save is never passed over; of the small ones, only the last counts.
+        let job = match waiting.iter().position(|j| matches!(j, StillJob::Save(..))) {
+            Some(at) => waiting.remove(at).expect("there"),
+            None => {
+                let last = waiting.pop_back().expect("there");
+                waiting.clear();
+                last
+            }
+        };
+        if still.is_none() {
+            match Still::open(&path) {
+                Ok(opened) => still = Some(opened),
+                Err(e) => {
+                    eprintln!("[warn] no pictures can be taken from the file: {e}");
+                    // Answer what is asked all the same, so nobody waits for it.
+                    if let StillJob::Save(..) = job {
+                        let mut s = status.lock().unwrap();
+                        s.saved_frames += 1;
+                        s.saved_frame = Some(Err(e.to_string()));
+                    }
+                    continue;
+                }
+            }
+        }
+        let still = still.as_mut().expect("opened");
+        match job {
+            StillJob::Thumbnail(at) => {
+                let file = folder.join(format!("{}.png", (at * 10.0).round() as i64));
+                let made = file.exists()
+                    || std::fs::create_dir_all(&folder).is_ok()
+                        && still.save(at, Some(THUMBNAIL_WIDTH), false, &file).is_ok();
+                if made {
+                    status.lock().unwrap().thumbnail = Some((at, file.to_string_lossy().into_owned()));
+                }
+            }
+            StillJob::Save(at, file) => {
+                let saved = file
+                    .parent()
+                    .map_or(Ok(()), std::fs::create_dir_all)
+                    .map_err(|e| e.to_string())
+                    .and_then(|()| still.save(at, None, true, &file).map_err(|e| e.to_string()))
+                    .map(|()| file.to_string_lossy().into_owned());
+                match &saved {
+                    Ok(path) => println!("Saved:   {path}"),
+                    Err(e) => eprintln!("[warn] the frame was not saved: {e}"),
+                }
+                let mut s = status.lock().unwrap();
+                s.saved_frames += 1;
+                s.saved_frame = Some(saved);
+            }
+        }
+    }
 }
 
 struct LayerPtr(*mut c_void);
@@ -258,8 +364,19 @@ impl Player {
             muted: options.muted,
             speed: options.speed,
             subtitle_delay: options.subtitle_delay,
+            picture: options.picture,
             ..Status::default()
         }));
+        let (stills, jobs) = channel();
+        let stills_thread = {
+            let path = options.path.clone();
+            let status = status.clone();
+            let folder = thumbnail_folder();
+            thread::Builder::new()
+                .name("stills".into())
+                .spawn(move || stills_loop(path, folder, jobs, status))
+                .ok()
+        };
         let shared = status.clone();
         let thread = thread::Builder::new()
             .name("render".into())
@@ -273,11 +390,34 @@ impl Player {
             commands,
             status,
             thread: Some(thread),
+            stills: Some(stills),
+            stills_thread,
         }
     }
 
     pub fn send(&self, command: Command) {
         let _ = self.commands.send(command);
+    }
+
+    /// Ask for a small picture of the video near `seconds`, for over the seek bar. It turns
+    /// up in [`Status::thumbnail`]. Times are taken in steps (a three-hundredth of the film,
+    /// at least a second), so that pictures already made serve again.
+    pub fn thumbnail(&self, seconds: f64) {
+        let duration = self.status().info.map_or(0.0, |i| i.duration);
+        let step = (duration / 300.0).max(1.0);
+        let at = ((seconds / step).round() * step).clamp(0.0, duration.max(0.0));
+        if let Some(stills) = &self.stills {
+            let _ = stills.send(StillJob::Thumbnail(at));
+        }
+    }
+
+    /// Save the picture on screen now, whole, as a PNG in `file`. How that went turns up in
+    /// [`Status::saved_frame`].
+    pub fn save_frame(&self, file: std::path::PathBuf) {
+        let at = self.status().position;
+        if let Some(stills) = &self.stills {
+            let _ = stills.send(StillJob::Save(at, file));
+        }
     }
 
     pub fn status(&self) -> Status {
@@ -291,7 +431,18 @@ impl Drop for Player {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
+        self.stills = None;
+        if let Some(thread) = self.stills_thread.take() {
+            let _ = thread.join();
+        }
+        let _ = std::fs::remove_dir_all(thumbnail_folder());
     }
+}
+
+/// Where the small pictures over the seek bar are kept while a file is open: a folder of this
+/// process's own among the system's temporary files.
+fn thumbnail_folder() -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("bitspring-video-{}", std::process::id()))
 }
 
 // ---- Time -----------------------------------------------------------------------------------
@@ -1651,6 +1802,8 @@ fn render_loop(
         eprintln!("[warn] {e}");
     }
     gpu.set_dolby_vision(options.dolby_vision);
+    let mut picture = options.picture;
+    gpu.set_picture(picture.shape, picture.cut, picture.fill);
     gpu.resize(size.0, size.1);
 
     let mut source = Source::open(&options.path)?;
@@ -1854,6 +2007,26 @@ fn render_loop(
                 Ok(Command::Scale(scale)) => gpu.set_scale(scale),
                 #[cfg(not(windows))]
                 Ok(Command::Scale(_)) => {}
+                Ok(Command::Step(step)) => {
+                    if !paused {
+                        paused = true;
+                        timeline.hold();
+                    }
+                    let frame = if info.fps > 1.0 { 1.0 / info.fps } else { 1.0 / 24.0 };
+                    let limit = if duration > 0.0 { (duration - 0.5).max(0.0) } else { f64::MAX };
+                    if step > 0 {
+                        // The next picture is already decoded: time moves on by one of them.
+                        timeline.floor = (timeline.floor + frame * step as f64).min(limit);
+                    } else {
+                        // The one before has gone: it is decoded again from its keyframe.
+                        let to = (timeline.floor + frame * step as f64).max(0.0);
+                        jump = Some((to, None, None));
+                    }
+                }
+                Ok(Command::SetPicture(wanted)) => {
+                    picture = wanted;
+                    gpu.set_picture(picture.shape, picture.cut, picture.fill);
+                }
                 Ok(Command::TogglePause) => {
                     paused = !paused;
                     if paused {
@@ -2248,6 +2421,7 @@ fn render_loop(
         s.muted = muted;
         s.speed = speed;
         s.subtitle_delay = subtitle_delay;
+        s.picture = picture;
         s.underruns = timeline
             .sound
             .as_ref()
@@ -2314,6 +2488,7 @@ mod tests {
             audio_delay: 0.0,
             speed: 1.0,
             subtitle_delay: 0.0,
+            picture: Picture::default(),
             volume: 1.0,
             muted: false,
             subtitle_lift: 0.0,

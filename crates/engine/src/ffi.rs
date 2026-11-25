@@ -19,6 +19,11 @@ pub struct bsv_audio {
 }
 
 #[repr(C)]
+pub struct bsv_still {
+    _opaque: [u8; 0],
+}
+
+#[repr(C)]
 pub struct bsv_tempo {
     _opaque: [u8; 0],
 }
@@ -108,6 +113,7 @@ pub struct bsv_media_info {
     pub dv_level: c_int,
     pub dv_bl_compatibility: c_int,
     pub dv_el_present: c_int,
+    pub pixel_aspect: c_double,
 }
 
 #[repr(C)]
@@ -154,6 +160,7 @@ pub struct bsv_render_stats {
     pub out_min_nits: c_float,
     pub out_bits: c_int,
     pub upscaled: c_int,
+    pub interlaced: c_int,
     pub new_picture: c_int,
     pub gpu_ms: c_float,
     pub fps: c_double,
@@ -315,6 +322,18 @@ unsafe extern "C" {
     );
     pub fn bsv_gpu_subs_clear(g: *mut bsv_gpu);
     pub fn bsv_gpu_subs_set_delay(g: *mut bsv_gpu, seconds: c_double);
+    pub fn bsv_gpu_set_picture(g: *mut bsv_gpu, shape: c_double, cut: c_double, fill: c_int);
+    pub fn bsv_still_open(path: *const c_char, error: *mut c_char, error_len: c_int) -> *mut bsv_still;
+    pub fn bsv_still_close(s: *mut bsv_still);
+    pub fn bsv_still_save(
+        s: *mut bsv_still,
+        seconds: c_double,
+        width: c_int,
+        exact: c_int,
+        path: *const c_char,
+        error: *mut c_char,
+        error_len: c_int,
+    ) -> c_int;
     pub fn bsv_tempo_open(
         rate: c_int,
         channels: c_int,

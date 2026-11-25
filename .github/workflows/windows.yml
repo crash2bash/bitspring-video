@@ -139,8 +139,8 @@ jobs:
           # Fifteen seconds, not five: on a slow runner the software renderer has spent more
           # than five compiling its shaders before the first frame is through.
           echo "::group::Playing for fifteen seconds"
-          timeout 120 ./bitspring-video.exe --verbose --no-sound --settings settings.json \
-            --script "1:subs 2,3:chapter-next,4:pause,15:quit" ../../clip/clip.mkv 2>&1 | tee run.log
+          BSV_PICTURES="$PWD/pictures" timeout 120 ./bitspring-video.exe --verbose --no-sound --settings settings.json \
+            --script "1:subs 2,3:chapter-next,4:pause,5:save-frame,15:quit" ../../clip/clip.mkv 2>&1 | tee run.log
           echo "::endgroup::"
 
           # A "Signal" line is printed once a frame has gone through the renderer to the window.
@@ -150,6 +150,11 @@ jobs:
           # after the jump, the clip stands at its second chapter's start, ten seconds in.
           grep -q '^Chapters: 3 ' run.log
           grep '^Script: *15' run.log | grep -qE 'position 1[01]\.'
+          # The frame on screen, saved whole: the HDR clip brought down to an SDR picture.
+          grep '^Saved:' run.log
+          ls -l pictures/*.png
+          cp pictures/*.png ../../clip/saved-frame.png
+          rm -rf pictures
           rm -f run.log settings.json history.json
 
       - uses: actions/upload-artifact@v4

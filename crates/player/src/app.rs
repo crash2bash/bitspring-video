@@ -24,14 +24,14 @@ use winit::window::{Fullscreen, Theme, Window, WindowId};
 use crate::history::{Memory, ResumeNote};
 use crate::launch::Settings;
 
-use crate::playback::{self, Command, Options, Player};
-use crate::prefs::Preferences;
+use crate::playback::{self, Command, Options, Picture, Player};
+use crate::prefs::{self, Preferences};
 use crate::queue::{Arrived, Queue};
 use crate::report;
 use crate::sidecars;
 use crate::steps;
 use crate::surface::Surface;
-use crate::ui::{self, Interface, Playing, Request, State, View};
+use crate::ui::{self, Interface, PictureChange, Playing, Request, State, View};
 
 /// How often the display is asked again whether HDR is on (it can be switched while we play).
 const DISPLAY_POLL: Duration = Duration::from_millis(1000);
@@ -91,6 +91,8 @@ struct Running {
     audio_delay: f64,
     /// How fast files play: kept from one to the next until the player is closed.
     speed: f64,
+    /// How the picture is placed: kept the same way.
+    picture: Picture,
 }
 
 struct App {
@@ -311,6 +313,7 @@ impl Running {
             audio_delay: self.audio_delay,
             speed: self.speed,
             subtitle_delay: recalled.subtitle_delay,
+            picture: self.picture,
             volume: self.volume,
             muted: self.muted,
             subtitle_lift: self.subtitle_lift(),
@@ -520,6 +523,25 @@ impl Running {
             Request::Next => self.go(self.queue.next(), settings),
             Request::Previous => self.go(self.queue.previous(), settings),
             Request::Chapter(step) => self.chapter(step, false, settings),
+            Request::Thumbnail(at) => {
+                if let Some(session) = &self.session {
+                    session.player.thumbnail(at);
+                }
+            }
+            Request::SaveFrame => {
+                if let Some(session) = &self.session {
+                    let at = session.player.status().position;
+                    session.player.save_frame(prefs::frame_file(&session.file_name, at));
+                }
+            }
+            Request::Picture(change) => {
+                match change {
+                    PictureChange::Shape(shape) => self.picture.shape = shape,
+                    PictureChange::Cut(cut) => self.picture.cut = cut,
+                    PictureChange::Fill(fill) => self.picture.fill = fill,
+                }
+                self.send(Command::SetPicture(self.picture));
+            }
             Request::SpeedBy(step) => {
                 let speed = steps::speed(self.speed, step, playback::MIN_SPEED, playback::MAX_SPEED);
                 self.send(Command::SetSpeed(speed));
@@ -632,11 +654,13 @@ impl Running {
                         let scale = self.window.scale_factor();
                         let max_w = self.display.width as f64 * 0.7;
                         let max_h = self.display.height as f64 * 0.7;
-                        let fit = (max_w / info.width as f64)
+                        // As shown: pixels that are not square (a DVD) made so.
+                        let shown_w = info.width as f64 * info.pixel_aspect;
+                        let fit = (max_w / shown_w)
                             .min(max_h / info.height as f64)
                             .min(scale.max(1.0));
                         let size = PhysicalSize::new(
-                            (info.width as f64 * fit) as u32,
+                            (shown_w * fit) as u32,
                             (info.height as f64 * fit) as u32,
                         );
                         let _ = self.window.request_inner_size(size);
@@ -821,6 +845,7 @@ impl App {
             hardware: prefs.hardware_decoding,
             audio_delay: prefs.audio_delay_ms as f64 / 1000.0,
             speed: 1.0,
+            picture: Picture::default(),
             saved,
             prefs,
             preferences_path: self.settings.preferences.clone(),

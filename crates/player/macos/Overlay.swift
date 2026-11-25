@@ -616,6 +616,9 @@ private struct SignalPanel: View {
             if let motion = motionRow(fps: v.fps) {
                 out.append((L("Motion", "Движение"), motion))
             }
+            if status.signal?.interlaced == true {
+                out.append((L("Fields", "Поля"), L("Interlaced, made whole", "Чересстрочное, поля склеены")))
+            }
         }
         if let s = status.signal {
             var text = "\(s.outputPrimaries) \(s.outputTransfer), \(s.outputBits) " + L("bit", "бит")
@@ -812,6 +815,8 @@ private struct Transport: View {
                 fill: live,
                 label: { seekLabel(at: $0 * status.duration) },
                 marks: status.duration > 0 ? status.chapters.dropFirst().map { $0.start / status.duration } : [],
+                preview: { model.thumbnail },
+                onPoint: { model.pointing(at: $0.map { $0 * status.duration }) },
                 onChange: { model.seek(to: $0 * status.duration) })
 
             Button {
@@ -953,6 +958,38 @@ private struct Transport: View {
                 .help(L("Sound track", "Звуковая дорожка"))
             }
 
+            // How the picture sits in the window, and a frame of it to keep.
+            Menu {
+                Picker(L("Shape", "Форма"), selection: pictureChoice(\.shape, "picture-shape")) {
+                    Text(L("As made", "Как в файле")).tag(0.0)
+                    ForEach(Self.shapes, id: \.self) { shape in Text(shapeName(shape)).tag(shape) }
+                }
+                .pickerStyle(.inline)
+                Picker(L("Cut away bars", "Обрезать полосы"), selection: pictureChoice(\.cut, "picture-cut")) {
+                    Text(L("None", "Нет")).tag(0.0)
+                    ForEach(Self.shapes, id: \.self) { shape in
+                        Text(L("To \(shapeName(shape))", "До \(shapeName(shape))")).tag(shape)
+                    }
+                }
+                .pickerStyle(.inline)
+                Toggle(L("Fill the window", "Заполнить окно"), isOn: Binding(
+                    get: { status.picture.fill },
+                    set: { model.send("picture-fill \($0 ? 1 : 0)") }))
+                Divider()
+                Button(L("Save this frame (⌘S)", "Сохранить кадр (⌘S)")) { model.send("save-frame") }
+            } label: {
+                Image(systemName: "aspectratio")
+                    .font(.system(size: 14, weight: .medium))
+                    .frame(width: 30, height: 40)
+                    .contentShape(Rectangle())
+            }
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help(L("Picture", "Картинка"))
+            .accessibilityLabel(L("Picture", "Картинка"))
+
             Button {
                 model.send("toggle-fullscreen")
             } label: {
@@ -991,6 +1028,21 @@ private struct Transport: View {
     }
 
     static let speeds: [Double] = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2]
+    static let shapes: [Double] = [16.0 / 9, 4.0 / 3, 2.39, 1.85]
+
+    private func shapeName(_ shape: Double) -> String {
+        switch shape {
+        case 16.0 / 9: return "16:9"
+        case 4.0 / 3: return "4:3"
+        default: return trimmed(shape, places: 2) + ":1"
+        }
+    }
+
+    private func pictureChoice(_ key: KeyPath<PictureInfo, Double>, _ command: String) -> Binding<Double> {
+        Binding(
+            get: { Self.shapes.first { abs($0 - status.picture[keyPath: key]) < 0.005 } ?? 0 },
+            set: { model.send("\(command) \($0)") })
+    }
 
     private var speedChoice: Binding<Double> {
         Binding(get: { status.speed }, set: { model.send("speed \($0)") })
@@ -1040,6 +1092,10 @@ struct Track: View {
     var origin: Double = 0
     /// Places, 0 to 1, where the track is cut: the starts of chapters on the seek bar.
     var marks: [Double] = []
+    /// A picture to show above the bubble (the seek bar's small frames), when there is one.
+    var preview: (() -> NSImage?)? = nil
+    /// Where the pointer is over the track, 0 to 1, or nil when it leaves.
+    var onPoint: ((Double?) -> Void)? = nil
     let onChange: (Double) -> Void
 
     @State private var hover: CGFloat?
@@ -1100,21 +1156,40 @@ struct Track: View {
             )
             .onContinuousHover { phase in
                 switch phase {
-                case .active(let point): hover = point.x
-                case .ended: hover = nil
+                case .active(let point):
+                    hover = point.x
+                    onPoint?(Double(min(max(point.x / width, 0), 1)))
+                case .ended:
+                    hover = nil
+                    onPoint?(nil)
                 }
             }
             .overlay(alignment: .topLeading) {
                 if let label, let at = drag.map({ CGFloat($0) * width }) ?? hover {
-                    label(Double(min(max(at / width, 0), 1)))
-                        .font(.figures(13))
-                        .padding(.horizontal, 10)
-                        .frame(height: 26)
-                        .glassEffect(playerGlass(), in: .capsule)
-                        .fixedSize()
-                        .alignmentGuide(.leading) { $0.width / 2 }
-                        .offset(x: at, y: -40)
-                        .allowsHitTesting(false)
+                    VStack(spacing: 6) {
+                        if let image = preview?() {
+                            Image(nsImage: image)
+                                .resizable()
+                                .aspectRatio(contentMode: .fit)
+                                .frame(width: 176)
+                                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                        .strokeBorder(Color.porcelain.opacity(0.22), lineWidth: 1))
+                                .shadow(color: .black.opacity(0.35), radius: 6, y: 2)
+                        }
+                        label(Double(min(max(at / width, 0), 1)))
+                            .font(.figures(13))
+                            .padding(.horizontal, 10)
+                            .frame(height: 26)
+                            .glassEffect(playerGlass(), in: .capsule)
+                            .fixedSize()
+                    }
+                    .fixedSize()
+                    .alignmentGuide(.leading) { $0.width / 2 }
+                    .alignmentGuide(.top) { $0.height }
+                    .offset(x: at, y: -14)
+                    .allowsHitTesting(false)
                 }
             }
         }

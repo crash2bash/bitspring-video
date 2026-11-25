@@ -101,6 +101,8 @@ public sealed partial class MainWindow : Window
         AutomationProperties.SetName(ChaptersButton, L("Chapters", "Главы"));
         Tip(SubtitlesButton, L("Subtitles", "Субтитры"));
         Tip(SpeedButton, L("Speed ([ and ])", "Скорость ([ и ])"));
+        Tip(PictureButton, L("Picture", "Картинка"));
+        AutomationProperties.SetName(PictureButton, L("Picture", "Картинка"));
         Tip(SoundButton, L("Sound track", "Звуковая дорожка"));
 
         // The play key and the played part of the seek bar take the signal's colour.
@@ -139,10 +141,16 @@ public sealed partial class MainWindow : Window
         var speedMenu = new MenuFlyout();
         speedMenu.Opening += (_, _) => FillSpeedMenu(speedMenu);
         SpeedButton.Flyout = speedMenu;
+        var pictureMenu = new MenuFlyout();
+        pictureMenu.Opening += (_, _) => FillPictureMenu(pictureMenu);
+        PictureButton.Flyout = pictureMenu;
+        // The small picture over the seek bar follows the pointer.
+        Seek.AddHandler(UIElement.PointerMovedEvent, new PointerEventHandler((_, e) => PointAt(e.GetCurrentPoint(Seek).Position.X)), true);
+        Seek.PointerExited += (_, _) => { pointing = null; PreviewPane.Visibility = Visibility.Collapsed; };
         var chaptersMenu = new MenuFlyout();
         chaptersMenu.Opening += (_, _) => FillChaptersMenu(chaptersMenu);
         ChaptersButton.Flyout = chaptersMenu;
-        foreach (var flyout in new FlyoutBase[] { signalFlyout, settingsFlyout, queueFlyout, subtitlesMenu, soundMenu, chaptersMenu, speedMenu })
+        foreach (var flyout in new FlyoutBase[] { signalFlyout, settingsFlyout, queueFlyout, subtitlesMenu, soundMenu, chaptersMenu, speedMenu, pictureMenu })
         {
             flyout.Opened += (_, _) => flyoutsOpen++;
             flyout.Closed += (_, _) => flyoutsOpen = Math.Max(0, flyoutsOpen - 1);
@@ -285,6 +293,10 @@ public sealed partial class MainWindow : Window
         {
             if (s.Speed != before.Speed) Say(SpeedNote(s.Speed));
             if (s.SubtitleDelay != before.SubtitleDelay) Say(SubtitleDelayNote(s.SubtitleDelay));
+            if (s.SavedFrames != before.SavedFrames)
+                Say(s.SavedFrameError == null
+                    ? L("Frame saved to Pictures", "Кадр сохранён в «Изображения»")
+                    : L("The frame could not be saved", "Кадр не сохранился"));
         }
         var open = s.File != null;
         Empty.Visibility = open ? Visibility.Collapsed : Visibility.Visible;
@@ -345,6 +357,7 @@ public sealed partial class MainWindow : Window
         MuteGlyph.Glyph = s.Muted || s.Volume <= 0.001 ? "" : "";
         Tip(MuteButton, s.Muted ? L("Unmute", "Включить звук") : L("Mute", "Без звука"));
 
+        ShowPreview(s);
         SpeedText.Text = SpeedName(s.Speed);
         SpeedText.Foreground = s.Speed == 1 ? Resource("QuietBrush") : Resource("PorcelainBrush");
         AutomationProperties.SetName(SpeedButton, SpeedNote(s.Speed));
@@ -542,6 +555,9 @@ public sealed partial class MainWindow : Window
         Key(VirtualKey.X, () => player.Send("subtitle-delay-by 0.1"));
         Key(VirtualKey.Z, () => player.Send("subtitle-delay-by -1"), VirtualKeyModifiers.Shift);
         Key(VirtualKey.X, () => player.Send("subtitle-delay-by 1"), VirtualKeyModifiers.Shift);
+        Key((VirtualKey)188 /* , */, () => player.Send("step -1"));
+        Key((VirtualKey)190 /* . */, () => player.Send("step 1"));
+        Key(VirtualKey.S, () => player.Send("save-frame"), VirtualKeyModifiers.Control);
         Key(VirtualKey.N, () => player.Send("next"));
         Key(VirtualKey.P, () => player.Send("previous"));
         Key(VirtualKey.L, () => { if (state.Queue != null) queueFlyout.ShowAt(QueueButton); });
@@ -590,6 +606,75 @@ public sealed partial class MainWindow : Window
     }
 
     private static readonly double[] Speeds = { 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2 };
+    private static readonly double[] Shapes = { 16.0 / 9, 4.0 / 3, 2.39, 1.85 };
+
+    private static string ShapeName(double shape) =>
+        Math.Abs(shape - 16.0 / 9) < 0.005 ? "16:9" : Math.Abs(shape - 4.0 / 3) < 0.005 ? "4:3" : Trimmed(shape, 2) + ":1";
+
+    private void FillPictureMenu(MenuFlyout menu)
+    {
+        menu.Items.Clear();
+        var p = state.Picture;
+        bool Is(double value, double shape) => Math.Abs(value - shape) < 0.005;
+        menu.Items.Add(new MenuFlyoutItem { Text = L("Shape", "Форма"), IsEnabled = false });
+        menu.Items.Add(Choice(L("As made", "Как в файле"), "shape", p.Shape == 0, "picture-shape 0"));
+        foreach (var shape in Shapes)
+            menu.Items.Add(Choice(ShapeName(shape), "shape", Is(p.Shape, shape), "picture-shape " + Number(shape)));
+        menu.Items.Add(new MenuFlyoutSeparator());
+        menu.Items.Add(new MenuFlyoutItem { Text = L("Cut away bars", "Обрезать полосы"), IsEnabled = false });
+        menu.Items.Add(Choice(L("None", "Нет"), "cut", p.Cut == 0, "picture-cut 0"));
+        foreach (var shape in Shapes)
+            menu.Items.Add(Choice(L($"To {ShapeName(shape)}", $"До {ShapeName(shape)}"), "cut", Is(p.Cut, shape), "picture-cut " + Number(shape)));
+        menu.Items.Add(new MenuFlyoutSeparator());
+        var fill = new ToggleMenuFlyoutItem { Text = L("Fill the window", "Заполнить окно"), IsChecked = p.Fill };
+        fill.Click += (_, _) => player.Send(p.Fill ? "picture-fill 0" : "picture-fill 1");
+        menu.Items.Add(fill);
+        menu.Items.Add(new MenuFlyoutSeparator());
+        menu.Items.Add(Action(L("Save this frame", "Сохранить кадр"), "Ctrl+S", "save-frame"));
+    }
+
+    // ---- The small picture over the seek bar ---------------------------------------------------
+
+    private double? pointing;
+    private double thumbnailAsked = -1;
+    private DateTime thumbnailAskedAt = DateTime.MinValue;
+    private string previewShown = "";
+
+    /// <summary>The pointer is over the seek bar, `x` from its left edge.</summary>
+    private void PointAt(double x)
+    {
+        if (state.Duration <= 0 || Seek.ActualWidth <= 0) return;
+        var fraction = Math.Clamp(x / Seek.ActualWidth, 0, 1);
+        var seconds = fraction * state.Duration;
+        pointing = seconds;
+        var step = Math.Max(state.Duration / 300, 1);
+        if (Math.Abs(seconds - thumbnailAsked) >= step / 2 && (DateTime.UtcNow - thumbnailAskedAt).TotalMilliseconds >= 80)
+        {
+            thumbnailAsked = seconds;
+            thumbnailAskedAt = DateTime.UtcNow;
+            player.Send("thumbnail " + Number(seconds));
+        }
+        // Centred over the pointer, standing on the transport bar.
+        var at = Seek.TransformToVisual(Root).TransformPoint(new Windows.Foundation.Point(x, 0));
+        PreviewPane.Margin = new Thickness(Math.Max(8, at.X - 88), 0, 0, Root.ActualHeight - at.Y + 26);
+        PreviewTime.Text = state.ChapterAt(seconds) is int n ? $"{Clock(seconds)}  {ChapterName(state, n)}" : Clock(seconds);
+        ShowPreview(state);
+    }
+
+    private void ShowPreview(PlayerState s)
+    {
+        if (pointing == null || s.Thumbnail == null)
+        {
+            if (pointing == null) PreviewPane.Visibility = Visibility.Collapsed;
+            return;
+        }
+        if (s.Thumbnail.Path != previewShown)
+        {
+            previewShown = s.Thumbnail.Path;
+            PreviewImage.Source = new Microsoft.UI.Xaml.Media.Imaging.BitmapImage(new Uri(s.Thumbnail.Path));
+        }
+        PreviewPane.Visibility = Visibility.Visible;
+    }
 
     private void FillSpeedMenu(MenuFlyout menu)
     {

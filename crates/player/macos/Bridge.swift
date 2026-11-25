@@ -143,6 +143,10 @@ final class InterfaceController {
                 chooseFiles(adding: false)
                 return true
             }
+            if event.keyCode == 1 { // S
+                model.send("save-frame")
+                return true
+            }
             if event.charactersIgnoringModifiers == "," {
                 model.reveal()
                 model.toggle(.settings)
@@ -160,6 +164,8 @@ final class InterfaceController {
         // By the key's place, not its letter: the same keys whatever the keyboard's language.
         let shift = flags.contains(.shift)
         switch event.keyCode {
+        case 43: model.send("step -1"); return true              // ,
+        case 47: model.send("step 1"); return true               // .
         case 33: model.send("speed-by -0.25"); return true       // [
         case 30: model.send("speed-by 0.25"); return true        // ]
         case 51: model.send("speed 1"); return true              // delete

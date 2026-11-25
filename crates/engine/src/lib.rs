@@ -126,6 +126,8 @@ impl DolbyVision {
 pub struct MediaInfo {
     pub width: u32,
     pub height: u32,
+    /// How wide one pixel is shown against its height: 1 for square pixels.
+    pub pixel_aspect: f64,
     pub bit_depth: u32,
     pub fps: f64,
     /// Seconds, 0 when the container does not say.
@@ -170,6 +172,7 @@ impl MediaInfo {
         MediaInfo {
             width: c.width.max(0) as u32,
             height: c.height.max(0) as u32,
+            pixel_aspect: if c.pixel_aspect > 0.0 { c.pixel_aspect } else { 1.0 },
             bit_depth: c.bit_depth.max(0) as u32,
             fps: c.fps,
             duration: c.duration,
@@ -841,6 +844,67 @@ impl Drop for AudioDecoder {
     }
 }
 
+// ---- Still pictures -------------------------------------------------------------------------
+
+/// Pictures of a video taken apart from playback, with a reader of their own: the small ones
+/// over the seek bar, and a frame saved whole. HDR comes out as SDR.
+pub struct Still {
+    ptr: NonNull<ffi::bsv_still>,
+}
+
+// SAFETY: used only by the thread that owns it.
+unsafe impl Send for Still {}
+
+impl Still {
+    pub fn open(path: &str) -> Result<Still, Error> {
+        let c_path =
+            CString::new(path).map_err(|_| Error("the path contains a NUL byte".into()))?;
+        let mut error = [0 as c_char; 256];
+        // SAFETY: both buffers outlive the call.
+        let ptr = unsafe {
+            ffi::bsv_still_open(c_path.as_ptr(), error.as_mut_ptr(), error.len() as c_int)
+        };
+        NonNull::new(ptr)
+            .map(|ptr| Still { ptr })
+            .ok_or_else(|| Error(text(&error)))
+    }
+
+    /// Write the picture at `seconds` to `path` as a PNG, `width` pixels wide (`None`: as large
+    /// as it is shown). `exact`: the very picture on screen then; otherwise the keyframe
+    /// before it, which is much quicker.
+    pub fn save(
+        &mut self,
+        seconds: f64,
+        width: Option<u32>,
+        exact: bool,
+        path: &std::path::Path,
+    ) -> Result<(), Error> {
+        let c_path = CString::new(path.to_string_lossy().as_bytes())
+            .map_err(|_| Error("the path contains a NUL byte".into()))?;
+        let mut error = [0 as c_char; 256];
+        // SAFETY: both buffers outlive the call.
+        let code = unsafe {
+            ffi::bsv_still_save(
+                self.ptr.as_ptr(),
+                seconds,
+                width.unwrap_or(0) as c_int,
+                exact as c_int,
+                c_path.as_ptr(),
+                error.as_mut_ptr(),
+                error.len() as c_int,
+            )
+        };
+        if code == 0 { Ok(()) } else { Err(Error(text(&error))) }
+    }
+}
+
+impl Drop for Still {
+    fn drop(&mut self) {
+        // SAFETY: we own it.
+        unsafe { ffi::bsv_still_close(self.ptr.as_ptr()) };
+    }
+}
+
 // ---- Sound at another speed --------------------------------------------------------------
 
 /// Makes sound faster or slower without changing its pitch: interleaved samples in, the same
@@ -1074,6 +1138,8 @@ pub struct RenderStats {
     /// The picture on screen was doubled by the upscaler: it was on, and the picture is
     /// enough smaller than the window for it to have something to do.
     pub upscaled: bool,
+    /// The picture is made of two fields, and was made whole before it was shown.
+    pub interlaced: bool,
     /// This call drew a picture, rather than showing again one drawn before.
     pub new_picture: bool,
     /// What this call's work took on the GPU, in milliseconds, as the GPU last timed it.
@@ -1352,6 +1418,21 @@ impl Gpu {
 
     /// Apply a frame's Dolby Vision RPU (the default), or leave it aside and show the base
     /// layer as the plain signal it also is. Holds for frames taken from now on.
+    /// How the picture is placed in the window. `shape`: width over height to show it at, or
+    /// `None` for its own. `cut`: a shape to cut it down to (2.39 takes away the bars above
+    /// and below a scope film kept in 16:9). `fill`: fill the window, cutting what does not fit.
+    pub fn set_picture(&mut self, shape: Option<f64>, cut: Option<f64>, fill: bool) {
+        // SAFETY: plain call on an owned gpu.
+        unsafe {
+            ffi::bsv_gpu_set_picture(
+                self.ptr.as_ptr(),
+                shape.unwrap_or(0.0),
+                cut.unwrap_or(0.0),
+                fill as c_int,
+            )
+        };
+    }
+
     pub fn set_dolby_vision(&mut self, apply: bool) {
         // SAFETY: plain call on an owned gpu.
         unsafe { ffi::bsv_gpu_set_dolby_vision(self.ptr.as_ptr(), apply as c_int) };
@@ -1406,6 +1487,7 @@ impl Gpu {
             hdr10_plus: c.src_hdr10_plus != 0,
             subtitle_shown: c.subtitle_shown != 0,
             upscaled: c.upscaled != 0,
+            interlaced: c.interlaced != 0,
             new_picture: c.new_picture != 0,
             gpu_ms: c.gpu_ms,
             output_primaries: primaries_from_c(c.out_primaries),

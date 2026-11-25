@@ -15,13 +15,13 @@ use std::time::{Duration, Instant};
 
 use bitspring_video::chapters;
 use bitspring_video::history::{Memory, ResumeNote};
-use bitspring_video::playback::{self, Command, Options, Player};
-use bitspring_video::prefs::Preferences;
+use bitspring_video::playback::{self, Command, Options, Picture, Player};
+use bitspring_video::prefs::{self, Preferences};
 use bitspring_video::queue::{Arrived, Queue};
 use bitspring_video::report;
 use bitspring_video::sidecars;
 use bitspring_video::steps;
-use bitspring_video::ui::{self, Playing, Request, State, View};
+use bitspring_video::ui::{self, PictureChange, Playing, Request, State, View};
 use bsv_display::policy::HdrMode;
 use bsv_display::{Display, HdrStatus, Luminance, LuminanceSource, OsReport};
 use bsv_engine::LogLevel;
@@ -110,6 +110,8 @@ pub struct Host {
     muted: bool,
     /// How fast files play: kept from one to the next until the player is closed.
     speed: f64,
+    /// How the picture is placed: kept the same way.
+    picture: Picture,
     /// False to play silently, for trying things out.
     sound: bool,
     mode: HdrMode,
@@ -172,6 +174,7 @@ impl Host {
             volume: saved.volume,
             muted: false,
             speed: 1.0,
+            picture: Picture::default(),
             sound,
             mode: saved.mode(),
             prefs: saved.clone(),
@@ -343,6 +346,7 @@ impl Host {
             audio_delay: self.prefs.audio_delay_ms as f64 / 1000.0,
             speed: self.speed,
             subtitle_delay: recalled.subtitle_delay,
+            picture: self.picture,
             volume: self.volume,
             muted: self.muted,
             subtitle_lift: self.subtitle_lift(),
@@ -421,6 +425,25 @@ impl Host {
             Some(Request::Next) => self.go(self.queue.next()),
             Some(Request::Previous) => self.go(self.queue.previous()),
             Some(Request::Chapter(step)) => self.chapter(step, false),
+            Some(Request::Thumbnail(at)) => {
+                if let Some(session) = &self.session {
+                    session.player.thumbnail(at);
+                }
+            }
+            Some(Request::SaveFrame) => {
+                if let Some(session) = &self.session {
+                    let at = session.player.status().position;
+                    session.player.save_frame(prefs::frame_file(&session.file_name, at));
+                }
+            }
+            Some(Request::Picture(change)) => {
+                match change {
+                    PictureChange::Shape(shape) => self.picture.shape = shape,
+                    PictureChange::Cut(cut) => self.picture.cut = cut,
+                    PictureChange::Fill(fill) => self.picture.fill = fill,
+                }
+                self.send(Command::SetPicture(self.picture));
+            }
             Some(Request::SpeedBy(step)) => {
                 let speed = steps::speed(self.speed, step, playback::MIN_SPEED, playback::MAX_SPEED);
                 self.send(Command::SetSpeed(speed));

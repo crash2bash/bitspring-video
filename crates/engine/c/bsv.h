@@ -48,6 +48,9 @@ struct bsv_media_info {
     int dv_profile, dv_level;
     int dv_bl_compatibility;    // 1 = HDR10 base, 2 = SDR, 4 = HLG, 0 = none (profile 5)
     int dv_el_present;          // an enhancement layer exists (profile 7); it is not decoded
+
+    // How wide one pixel is shown against its height: 1 for square pixels, 64/45 for a 16:9 DVD.
+    double pixel_aspect;
 };
 
 struct bsv_audio_info {
@@ -191,6 +194,19 @@ int bsv_audio_send(bsv_audio *a, void *avpacket);
 int bsv_audio_receive(bsv_audio *a, const float **samples, int *frames, double *pts);
 void bsv_audio_flush(bsv_audio *a);
 
+// ---- Still pictures -------------------------------------------------------------------------
+
+// Pictures of a video taken apart from playback, with a reader of their own: one thread at a
+// time. HDR is brought down to SDR for them.
+typedef struct bsv_still bsv_still;
+bsv_still *bsv_still_open(const char *path, char *error, int error_len);
+void bsv_still_close(bsv_still *s);
+// Write the picture at `seconds` as a PNG at `path`, `width` pixels wide (0: as large as it is
+// shown). exact: the very picture on screen at that time; otherwise the nearest keyframe before
+// it, which is quick. Returns 0, or -1 with `error` filled.
+int bsv_still_save(bsv_still *s, double seconds, int width, int exact, const char *path, char *error,
+                   int error_len);
+
 // ---- Sound at another speed --------------------------------------------------------------
 
 // Interleaved 32-bit float in and out, at one rate and channel count, made `speed` times as
@@ -244,6 +260,7 @@ struct bsv_render_stats {
     int out_bits;
 
     int upscaled;           // the picture on screen was doubled by the upscaling shader
+    int interlaced;         // the picture is made of two fields, made whole before it is shown
     int new_picture;        // this call drew a picture, not only showed one drawn before
     float gpu_ms;           // what this call's work took on the GPU, as last measured
 
@@ -283,6 +300,12 @@ uint64_t bsv_gpu_cache_signature(bsv_gpu *g);
 
 // Drop every queued frame (after a seek or when the file changes).
 void bsv_gpu_reset(bsv_gpu *g);
+
+// How the picture is placed in the window: `shape` is the width over the height to show it at
+// (0: its own, with pixels that are not square made so), `cut` a shape to cut it down to (0:
+// none; 2.39 takes away the bars above and below a 16:9 picture of a scope film), and `fill`
+// fills the window, cutting what does not fit.
+void bsv_gpu_set_picture(bsv_gpu *g, double shape, double cut, int fill);
 
 // Whether a Dolby Vision RPU on a frame is applied (the default) or left aside, which shows
 // the base layer as the plain signal it also is (HDR10 for profile 8.1). It holds for frames
