@@ -263,6 +263,36 @@ fail:
     return NULL;
 }
 
+// A sound file that sits next to the video: only its sound is read. Its times are taken as
+// they are written, counting from the video's start: a track that begins late says so itself.
+bsv_source *bsv_source_open_sound(const char *url, char *error, int error_len)
+{
+    bsv_source *s = av_mallocz(sizeof(*s));
+    if (!s)
+        return NULL;
+    int ret = open_local(&s->fmt, url, NULL);
+    if (ret < 0) {
+        set_error(error, error_len, "cannot open the sound file", ret);
+        goto fail;
+    }
+    if ((ret = avformat_find_stream_info(s->fmt, NULL)) < 0) {
+        set_error(error, error_len, "cannot read the sound file", ret);
+        goto fail;
+    }
+    int audio = av_find_best_stream(s->fmt, AVMEDIA_TYPE_AUDIO, -1, -1, &s->audio_codec, 0);
+    if (audio < 0 || !s->audio_codec) {
+        set_error(error, error_len, "no sound in the file this build can play", 0);
+        goto fail;
+    }
+    s->audio = s->fmt->streams[audio];
+    choose_streams(s);
+    return s;
+
+fail:
+    bsv_source_close(s);
+    return NULL;
+}
+
 int bsv_source_has_video(const bsv_source *s)
 {
     return s->video != NULL;
@@ -329,6 +359,8 @@ int bsv_source_seek(bsv_source *s, double seconds)
         seconds = 0;
     // Seeking by the video stream lands on a picture that can be decoded on its own.
     const AVStream *st = s->video ? s->video : s->audio;
+    if (!st)
+        return AVERROR(EINVAL);
     int64_t ts = llround((seconds + s->origin) / av_q2d(st->time_base));
     return avformat_seek_file(s->fmt, st->index, INT64_MIN, ts, ts, 0);
 }
@@ -407,11 +439,11 @@ static AVStream *stream_of(const bsv_source *s, int index, enum AVMediaType type
 
 int bsv_source_select_audio(bsv_source *s, int index)
 {
-    AVStream *st = stream_of(s, index, AVMEDIA_TYPE_AUDIO);
-    if (!st)
+    AVStream *st = index < 0 ? NULL : stream_of(s, index, AVMEDIA_TYPE_AUDIO);
+    if (index >= 0 && !st)
         return -1;
     s->audio = st;
-    s->audio_codec = avcodec_find_decoder(st->codecpar->codec_id);
+    s->audio_codec = st ? avcodec_find_decoder(st->codecpar->codec_id) : NULL;
     choose_streams(s);
     return 0;
 }

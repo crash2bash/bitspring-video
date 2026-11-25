@@ -36,8 +36,9 @@ Options:
                      open <file>, add <file>, with | between several files, next,
                      previous, play <n> for the n-th file of the list counting from 0,
                      save <playlist>, audio <n>, subs <n>, subs off, where <n> is a
-                     track number from --info, and set <name> <value> for a setting as
-                     named in its file)
+                     track number from --info (subtitle files beside the video count
+                     from 1000, sound files from 2000), and set <name> <value> for a
+                     setting as named in its file)
 
 Keys:
   Space              pause

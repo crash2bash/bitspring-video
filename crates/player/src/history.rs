@@ -34,6 +34,9 @@ pub struct Remembered {
     pub duration: f64,
     /// The sound track chosen by hand, by its stream number.
     pub audio_track: Option<i32>,
+    /// Or the sound file next to the video chosen by hand, by its place against the video.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sound_place: Option<String>,
     /// The subtitle track chosen by hand, or `subtitles_off` when they were switched off.
     pub subtitle_track: Option<i32>,
     pub subtitles_off: bool,
@@ -74,6 +77,16 @@ struct Left {
     updated: u64,
 }
 
+/// The sound chosen by hand for the last video played from a folder. The next episode is
+/// played the same way: a series is one choice of dubbing, not one for every file.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+struct Sound {
+    /// The place of a sound file against its video; empty for the video's own sound.
+    place: String,
+    updated: u64,
+}
+
 #[derive(Default, Serialize, Deserialize)]
 #[serde(default)]
 struct Stored {
@@ -81,6 +94,9 @@ struct Stored {
     /// By the folder's path, or the playlist file's.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     lists: BTreeMap<String, Left>,
+    /// By the folder's path.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    sound: BTreeMap<String, Sound>,
 }
 
 fn now() -> u64 {
@@ -90,11 +106,17 @@ fn now() -> u64 {
 }
 
 /// What the player is told when it opens a file it has seen before.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Recalled {
     pub start: Option<f64>,
     pub audio_track: Option<i32>,
     pub subtitles: Option<Option<i32>>,
+    /// The sound file to play with it, by its place against the video: the one chosen for
+    /// this file, or else for the last file played from its folder.
+    pub sound_place: Option<String>,
+    /// The video's own sound was chosen by hand, for this file or for the last one played
+    /// from its folder.
+    pub own_sound: bool,
 }
 
 /// The note the interface shows for a while when a file is picked up where it was left: it
@@ -134,6 +156,8 @@ pub struct Memory {
 
 struct Current {
     key: String,
+    /// The folder the file is in.
+    folder: String,
     entry: Remembered,
     /// The entry differs from what is in the file.
     unsaved: bool,
@@ -172,21 +196,40 @@ impl Memory {
     /// A file is being opened: finish with the one before, and say what is known of this one.
     pub fn opened(&mut self, file: &str) -> Recalled {
         self.closed();
+        let folder = Path::new(file)
+            .parent()
+            .map(|folder| folder.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        // What was chosen for the last file played from this folder stands for this one
+        // too, unless something was chosen for this very file.
+        let around = self.stored.sound.get(&folder).map(|sound| &sound.place);
         let Some(key) = fingerprint(Path::new(file)) else {
-            return Recalled::default();
+            return Recalled {
+                sound_place: around.filter(|place| !place.is_empty()).cloned(),
+                own_sound: around.is_some_and(String::is_empty),
+                ..Recalled::default()
+            };
         };
         let mut entry = self.stored.files.get(&key).cloned().unwrap_or_default();
         entry.name = Path::new(file)
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
+        let chosen_here = entry.audio_track.is_some() || entry.sound_place.is_some();
+        let around = around.filter(|_| !chosen_here);
         let recalled = Recalled {
             start: entry.resume_point(),
             audio_track: entry.audio_track,
             subtitles: entry.subtitles(),
+            sound_place: entry
+                .sound_place
+                .clone()
+                .or_else(|| around.filter(|place| !place.is_empty()).cloned()),
+            own_sound: entry.audio_track.is_some() || around.is_some_and(String::is_empty),
         };
         self.current = Some(Current {
             key,
+            folder,
             entry,
             unsaved: false,
             written: Instant::now(),
@@ -220,13 +263,46 @@ impl Memory {
         }
     }
 
-    /// The sound track was chosen by hand.
-    pub fn chose_audio(&mut self, track: i32) {
-        if let Some(current) = &mut self.current {
-            current.entry.audio_track = Some(track);
-            current.unsaved = true;
-            self.write();
+    /// The sound track was chosen by hand. `place` is given for a sound file next to the
+    /// video (see `Sidecar::place`), empty when the file was opened by hand from elsewhere:
+    /// such a choice cannot be made again without the user, so it is not kept.
+    pub fn chose_audio(&mut self, track: i32, place: Option<&str>) {
+        let Some(current) = &mut self.current else {
+            return;
+        };
+        match place {
+            None => {
+                current.entry.audio_track = Some(track);
+                current.entry.sound_place = None;
+            }
+            Some("") => return,
+            Some(place) => {
+                current.entry.audio_track = None;
+                current.entry.sound_place = Some(place.to_string());
+            }
         }
+        current.unsaved = true;
+        // The rest of the folder goes the same way.
+        self.stored.sound.insert(
+            current.folder.clone(),
+            Sound {
+                place: place.unwrap_or_default().to_string(),
+                updated: now(),
+            },
+        );
+        while self.stored.sound.len() > MOST_LISTS {
+            let oldest = self
+                .stored
+                .sound
+                .iter()
+                .min_by_key(|(_, sound)| sound.updated)
+                .map(|(key, _)| key.clone());
+            match oldest {
+                Some(key) => self.stored.sound.remove(&key),
+                None => break,
+            };
+        }
+        self.write();
     }
 
     /// The subtitle track was chosen by hand; `None` switches subtitles off.
@@ -400,7 +476,7 @@ mod tests {
         let mut memory = Memory::beside(&settings);
         assert_eq!(memory.opened(film.to_str().unwrap()), Recalled::default());
         memory.note(600.0, 1700.0, false, false);
-        memory.chose_audio(2);
+        memory.chose_audio(2, None);
         memory.chose_subtitles(None);
         memory.closed();
         assert!(folder.join("history.json").exists());
@@ -414,6 +490,8 @@ mod tests {
                 start: Some(597.0),
                 audio_track: Some(2),
                 subtitles: Some(None),
+                sound_place: None,
+                own_sound: true,
             }
         );
     }
@@ -440,6 +518,61 @@ mod tests {
                 start: None,
                 audio_track: None,
                 subtitles: Some(Some(4)),
+                ..Recalled::default()
+            }
+        );
+    }
+
+    #[test]
+    fn the_dubbing_chosen_for_one_episode_is_played_with_the_next() {
+        let folder = scratch("dubbing");
+        let episode = |n: u32| {
+            let file = folder.join(format!("Show - {n:02}.mkv"));
+            std::fs::write(&file, format!("episode {n}")).unwrap();
+            file.to_string_lossy().into_owned()
+        };
+        let (first, second, third) = (episode(1), episode(2), episode(3));
+        let elsewhere = scratch("dubbing-elsewhere").join("Film.mkv");
+        std::fs::write(&elsewhere, b"a film").unwrap();
+        let settings = folder.join("settings.json");
+
+        let mut memory = Memory::beside(&settings);
+        assert_eq!(memory.opened(&first), Recalled::default());
+        memory.chose_audio(2000, Some("RUS Sound/[AniDub]|.mka"));
+        // A file opened by hand from somewhere else changes nothing: it cannot be found again.
+        memory.chose_audio(2003, Some(""));
+
+        let mut memory = Memory::beside(&settings);
+        let with_the_dubbing = Recalled {
+            sound_place: Some("RUS Sound/[AniDub]|.mka".into()),
+            ..Recalled::default()
+        };
+        assert_eq!(memory.opened(&first), with_the_dubbing);
+        assert_eq!(memory.opened(&second), with_the_dubbing);
+        // A video in another folder is not part of this.
+        assert_eq!(
+            memory.opened(elsewhere.to_str().unwrap()),
+            Recalled::default()
+        );
+
+        // Going back to the video's own sound in the second episode holds for the third,
+        // and leaves the first as it was chosen.
+        memory.opened(&second);
+        memory.chose_audio(1, None);
+        assert_eq!(
+            memory.opened(&third),
+            Recalled {
+                own_sound: true,
+                ..Recalled::default()
+            }
+        );
+        assert_eq!(memory.opened(&first), with_the_dubbing);
+        assert_eq!(
+            memory.opened(&second),
+            Recalled {
+                audio_track: Some(1),
+                own_sound: true,
+                ..Recalled::default()
             }
         );
     }

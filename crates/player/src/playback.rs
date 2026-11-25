@@ -7,6 +7,10 @@
 //!
 //! Time comes from the sound device (see `bsv_audio`), so the picture follows the sound. A file
 //! without sound, or a machine without an output device, falls back to the system clock.
+//!
+//! The sound may also come from a file next to the video (a dubbing kept beside it). The
+//! reading thread then reads two files: the video's as before, without its sound, and the
+//! sound file as fast as the device takes sound, both from the same place after every seek.
 
 use std::collections::VecDeque;
 use std::ffi::c_void;
@@ -42,6 +46,8 @@ const MAX_LEADING_SILENCE: f64 = 10.0;
 /// want a second or more of the file before it gives that picture: the sound stored alongside
 /// has to go somewhere meanwhile, or the reading stops and the picture never comes.
 const SOUND_WAITING: f64 = 20.0;
+/// Sound from a file next to the video kept decoded beyond the device's own buffer, in seconds.
+const SOUND_AHEAD: f64 = 1.0;
 
 pub struct Options {
     pub path: String,
@@ -74,6 +80,13 @@ pub struct Options {
     /// subtitles `Some(None)` is "off". They come before the languages above.
     pub audio_track: Option<i32>,
     pub subtitles: Option<Option<i32>>,
+    /// The sound file to play instead of the video's own sound, by its place against the
+    /// video (see [`Sidecar::place`]): the one chosen for this file before, or for the last
+    /// file played from its folder.
+    pub sound_place: Option<String>,
+    /// The video's own sound was chosen by hand, here or for the last file of its folder: no
+    /// sound file is put on in its place for the language's sake.
+    pub own_sound: bool,
 }
 
 pub enum Command {
@@ -109,6 +122,8 @@ pub enum Command {
     SetAudioDelay(f64),
     /// Show the subtitles of this file, which may be anywhere: it was opened by hand.
     AddSubtitles(String),
+    /// Play the sound of this file with the picture; it too was opened by hand.
+    AddSound(String),
 }
 
 /// The sound track and the device it plays on.
@@ -132,6 +147,9 @@ pub struct Status {
     pub tracks: Vec<Track>,
     pub audio_track: Option<i32>,
     pub subtitle_track: Option<i32>,
+    /// For each sound track that is a file next to the video, its place against the video.
+    /// Empty for a file opened by hand, which the next episode has no counterpart of.
+    pub sound_places: Vec<(i32, String)>,
     /// 0.0 to 1.0.
     pub volume: f32,
     pub muted: bool,
@@ -311,6 +329,13 @@ impl Timeline {
         self.floor = to;
         self.system = SystemClock::stopped_at(to);
     }
+
+    /// A sound device was opened after playback began (the video has no sound of its own,
+    /// and a sound file was put on): from now on time is the device's.
+    fn adopt(&mut self, clock: bsv_audio::Clock, controls: bsv_audio::Controls) {
+        controls.set_playing(!self.held);
+        self.sound = Some((clock, controls));
+    }
 }
 
 // ---- Between the threads --------------------------------------------------------------------
@@ -354,16 +379,29 @@ impl PacketQueue {
     }
 
     /// Add a packet, waiting while the queue is full. Returns `false` (and drops the packet)
-    /// when a seek or quit made it stale in the meantime.
-    fn push(&self, packet: Packet, generation: u64, shared: &Shared) -> bool {
+    /// when a seek or quit made it stale in the meantime. `meanwhile` is called every few
+    /// milliseconds of the wait: the sound must not stand still because the picture does.
+    fn push(
+        &self,
+        packet: Packet,
+        generation: u64,
+        shared: &Shared,
+        mut meanwhile: impl FnMut(),
+    ) -> bool {
         let mut state = self.state.lock().unwrap();
         while state.1 >= VIDEO_PACKETS_AHEAD {
             if shared.stale(generation) {
                 return false;
             }
+            drop(state);
+            meanwhile();
+            state = self.state.lock().unwrap();
+            if state.1 < VIDEO_PACKETS_AHEAD {
+                break;
+            }
             state = self
                 .changed
-                .wait_timeout(state, Duration::from_millis(20))
+                .wait_timeout(state, Duration::from_millis(10))
                 .unwrap()
                 .0;
         }
@@ -411,6 +449,8 @@ enum ReaderCommand {
     /// The subtitle files there are for the video (found near it, or opened by hand), in the
     /// order of their track numbers.
     Sidecars(Vec<String>),
+    /// The same for sound files: one for each of their tracks.
+    Sounds(Vec<OutsideSound>),
 }
 
 /// News from the reading thread that is not a packet.
@@ -426,6 +466,11 @@ enum FromReader {
     },
     /// The sound track now playing.
     Sound(AudioInfo),
+    /// Which track that is, after a change of track was asked for: the one asked for, or the
+    /// one before it when that could not be opened.
+    Playing(Option<i32>),
+    /// A sound device was opened after playback began.
+    Device(SoundSetup),
     /// A font that came with a subtitle file.
     Font { name: String, data: Vec<u8> },
 }
@@ -459,10 +504,15 @@ struct SoundPath {
     decoder: AudioDecoder,
     /// The time base has been declared for the current position.
     based: bool,
+    /// Samples of silence owed to the device before anything in `waiting`: the stretch
+    /// between where playback starts and where a track that begins later does.
+    silence: usize,
     /// Decoded sound the device's buffer had no room for yet, oldest first.
     waiting: VecDeque<f32>,
     /// The file has no more sound: the device is told once `waiting` has gone through.
     ending: bool,
+    /// The longest silence put before a track that begins after the picture, in seconds.
+    most_silence: f64,
 }
 
 impl SoundPath {
@@ -475,15 +525,17 @@ impl SoundPath {
             output,
             decoder,
             based: false,
+            silence: 0,
             waiting: VecDeque::new(),
             ending: false,
+            most_silence: MAX_LEADING_SILENCE,
         })
     }
 
     /// Hand the device whatever it has room for, and tell it when the last of the sound is in.
     fn settle(&mut self) {
-        settle(&mut self.output, &mut self.waiting);
-        if self.ending && self.waiting.is_empty() {
+        settle(&mut self.output, &mut self.silence, &mut self.waiting);
+        if self.ending && self.silence == 0 && self.waiting.is_empty() {
             self.output.set_ended();
             self.ending = false;
         }
@@ -493,9 +545,21 @@ impl SoundPath {
     fn flush(&mut self) {
         self.decoder.flush();
         self.output.flush();
+        self.silence = 0;
         self.waiting.clear();
         self.ending = false;
         self.based = false;
+    }
+
+    /// The file has no more sound. If none came at all for where playback starts (the track
+    /// is shorter than the picture), time starts there all the same and runs over silence.
+    fn finish(&mut self, start: f64) {
+        if !self.based {
+            self.output.set_base(start);
+            self.based = true;
+        }
+        self.ending = true;
+        self.settle();
     }
 
     /// Move everything the decoder has ready into the device's buffer. `start` is where
@@ -520,19 +584,10 @@ impl SoundPath {
                     data = &data[skip * channels..];
                 } else if samples.pts > start + 0.005 {
                     // The track begins after the picture: fill the gap so both stay on one timeline.
-                    let gap = (samples.pts - start).min(MAX_LEADING_SILENCE);
-                    let silence = vec![0.0f32; (gap * rate) as usize * channels];
+                    let gap = (samples.pts - start).min(self.most_silence);
+                    self.silence = (gap * rate) as usize * channels;
                     self.output.set_base(start);
                     self.based = true;
-                    if !queue(
-                        &mut self.output,
-                        &mut self.waiting,
-                        &silence,
-                        generation,
-                        shared,
-                    ) {
-                        return Ok(());
-                    }
                 }
                 if !self.based {
                     self.output.set_base(start.max(samples.pts));
@@ -541,6 +596,7 @@ impl SoundPath {
             }
             if !queue(
                 &mut self.output,
+                &mut self.silence,
                 &mut self.waiting,
                 data,
                 generation,
@@ -552,8 +608,17 @@ impl SoundPath {
     }
 }
 
-/// Move waiting sound into the device's buffer, as much as it has room for.
-fn settle(output: &mut AudioOutput, waiting: &mut VecDeque<f32>) {
+/// Move waiting sound into the device's buffer, as much as it has room for: first the
+/// silence owed before it.
+fn settle(output: &mut AudioOutput, silence: &mut usize, waiting: &mut VecDeque<f32>) {
+    const QUIET: [f32; 4096] = [0.0; 4096];
+    while *silence > 0 {
+        let taken = output.write(&QUIET[..QUIET.len().min(*silence)]);
+        if taken == 0 {
+            return;
+        }
+        *silence -= taken;
+    }
     while !waiting.is_empty() {
         let taken = output.write(waiting.make_contiguous());
         if taken == 0 {
@@ -567,6 +632,7 @@ fn settle(output: &mut AudioOutput, waiting: &mut VecDeque<f32>) {
 /// [`SOUND_WAITING`] seconds are held; returns `false` if a seek or quit interrupted that.
 fn queue(
     output: &mut AudioOutput,
+    silence: &mut usize,
     waiting: &mut VecDeque<f32>,
     data: &[f32],
     generation: u64,
@@ -576,7 +642,7 @@ fn queue(
     let limit = (SOUND_WAITING * format.sample_rate as f64) as usize * format.channels as usize;
     waiting.extend(data);
     loop {
-        settle(output, waiting);
+        settle(output, silence, waiting);
         if waiting.len() <= limit {
             return true;
         }
@@ -589,6 +655,226 @@ fn queue(
 
 /// Track numbers from here up stand for subtitle files next to the video, not streams inside it.
 const SIDECAR_BASE: i32 = 1000;
+/// And from here up, for the sound tracks of sound files next to it.
+const SOUND_BASE: i32 = 2000;
+
+/// One sound track of a file next to the video.
+#[derive(Clone)]
+struct OutsideSound {
+    path: String,
+    /// The track's stream number in that file.
+    stream: i32,
+    /// See [`Sidecar::place`]; empty for a file opened by hand.
+    place: String,
+}
+
+/// The sound tracks in a sound file, as the tracks they are listed as: numbered from
+/// `SOUND_BASE + first`. Empty when the file cannot be read or has no sound this build plays.
+fn outside_tracks(file: &Sidecar, first: usize) -> Vec<(Track, OutsideSound)> {
+    let source = match Source::open_sound(&file.path) {
+        Ok(source) => source,
+        Err(e) => {
+            eprintln!("[warn] {}: {e}", file.path);
+            return Vec::new();
+        }
+    };
+    let streams: Vec<Track> = source
+        .tracks()
+        .into_iter()
+        .filter(|t| t.kind == TrackKind::Audio)
+        .collect();
+    let several = streams.len() > 1;
+    streams
+        .into_iter()
+        .enumerate()
+        .map(|(n, mut track)| {
+            let stream = track.index;
+            track.index = SOUND_BASE + (first + n) as i32;
+            // What the file says of itself comes before what its name and folders suggest.
+            if track.language.is_empty() || track.language == "und" {
+                track.language = file.language.clone();
+            }
+            // Where the file is says whose sound it is; its tracks' own names are needed
+            // only to tell several of them apart.
+            track.title = match (several, track.title.is_empty()) {
+                (true, false) => format!("{}, {}", file.title, track.title),
+                (true, true) => format!("{}, {}", file.title, n + 1),
+                (false, _) => file.title.clone(),
+            };
+            track.is_default = false;
+            let place = match (file.place.is_empty(), several) {
+                (true, _) => String::new(),
+                (false, true) => format!("{}#{n}", file.place),
+                (false, false) => file.place.clone(),
+            };
+            let outside = OutsideSound {
+                path: file.path.clone(),
+                stream,
+                place,
+            };
+            (track, outside)
+        })
+        .collect()
+}
+
+/// Which of the sound files found next to a video is put on without being asked for, if any.
+/// `own` are the video's own tracks.
+///
+/// In order: the file chosen before, for this video or for the last one played from its
+/// folder (the same dubbing of the next episode). Then none, if the video's own sound was
+/// chosen by hand. Then a file in the language asked for, when the video has no track in it;
+/// or any file at all, when the video has no sound.
+fn sound_file_wanted(
+    options: &Options,
+    own: &[Track],
+    found: &[(Track, OutsideSound)],
+) -> Option<usize> {
+    let in_language = |t: &Track| language::same(&t.language, &options.audio_language);
+    let first_in_language = || found.iter().position(|(track, _)| in_language(track));
+    let mut own = own.iter().filter(|t| t.kind == TrackKind::Audio).peekable();
+    options
+        .sound_place
+        .as_deref()
+        .filter(|place| !place.is_empty())
+        .and_then(|place| found.iter().position(|(_, file)| file.place == place))
+        .or_else(|| {
+            if options.audio_track.is_some() || options.own_sound {
+                None
+            } else if own.peek().is_none() {
+                first_in_language().or((!found.is_empty()).then_some(0))
+            } else if own.any(in_language) {
+                None
+            } else {
+                first_in_language()
+            }
+        })
+}
+
+/// The sound file being read in place of the video's own sound.
+struct Outside {
+    file: OutsideSound,
+    source: Source,
+    /// Its track number.
+    track: i32,
+    /// Nothing more to read from it, until the next seek.
+    ended: bool,
+}
+
+impl Outside {
+    fn open(file: &OutsideSound, track: i32) -> Result<Outside, String> {
+        let mut source = Source::open_sound(&file.path).map_err(|e| e.to_string())?;
+        source
+            .select_audio(file.stream)
+            .map_err(|e| e.to_string())?;
+        Ok(Outside {
+            file: file.clone(),
+            source,
+            track,
+            ended: false,
+        })
+    }
+
+    /// Go to `to`. A file that cannot be searched is read again from its beginning, and what
+    /// comes before `to` is dropped on the way.
+    fn seek(&mut self, to: f64) {
+        self.ended = false;
+        if self.source.seek(to).is_ok() {
+            return;
+        }
+        match Outside::open(&self.file, self.track) {
+            Ok(again) => self.source = again.source,
+            Err(e) => {
+                eprintln!("[warn] the sound file cannot be read from there: {e}");
+                self.ended = true;
+            }
+        }
+    }
+}
+
+/// Play the sound track `from` has selected: through the device that is open, or through one
+/// opened now (the video had no sound of its own).
+fn take_sound(
+    sound: &mut Option<SoundPath>,
+    from: &Source,
+    news: &Sender<FromReader>,
+) -> Result<(), String> {
+    let track = from.audio_info().ok_or("the file has no sound")?;
+    match sound {
+        Some(path) => {
+            let format = path.output.format().clone();
+            path.decoder = AudioDecoder::open(from, format.sample_rate, format.channels)
+                .map_err(|e| e.to_string())?;
+        }
+        None => {
+            let path = SoundPath::open(from, &track)?;
+            let _ = news.send(FromReader::Device(SoundSetup {
+                clock: path.output.clock(),
+                controls: path.output.controls(),
+                sound: Sound {
+                    track: track.clone(),
+                    device: path.output.format().clone(),
+                },
+            }));
+            *sound = Some(path);
+        }
+    }
+    let _ = news.send(FromReader::Sound(track));
+    Ok(())
+}
+
+/// Keep the device in sound: move on what is waiting for it, and read more of the sound
+/// file next to the video when there is one. That file is read as fast as its sound is
+/// played, whatever the video's packets are doing: the picture follows the sound's clock, so
+/// the sound may never wait for the picture.
+fn tend(
+    sound: &mut Option<SoundPath>,
+    outside: &mut Option<Outside>,
+    start: f64,
+    generation: u64,
+    shared: &Shared,
+) {
+    let Some(path) = sound else {
+        return;
+    };
+    path.settle();
+    let Some(file) = outside.as_mut().filter(|file| !file.ended) else {
+        return;
+    };
+    let format = path.output.format();
+    let ahead = (SOUND_AHEAD * format.sample_rate as f64) as usize * format.channels as usize;
+    let began = Instant::now();
+    while path.silence + path.waiting.len() < ahead && !shared.stale(generation) {
+        // A little at a time, so the video's packets are not kept waiting; more while the
+        // sound has yet to reach the place playback starts at, since nothing moves until then.
+        let enough = Duration::from_millis(if path.based { 4 } else { 30 });
+        if began.elapsed() > enough {
+            return;
+        }
+        let over = match file.source.read() {
+            Ok(Read::Audio(packet)) => path
+                .decoder
+                .send(Some(packet))
+                .map_err(|e| e.to_string())
+                .and_then(|()| path.pump(start, generation, shared))
+                .err(),
+            Ok(Read::End) => {
+                let _ = path.decoder.send(None);
+                let _ = path.pump(start, generation, shared);
+                Some(String::new())
+            }
+            Ok(_) => None,
+            Err(e) => Some(e.to_string()),
+        };
+        if let Some(why) = over {
+            if !why.is_empty() {
+                eprintln!("[warn] the sound file cannot be read further: {why}");
+            }
+            file.ended = true;
+            path.finish(start);
+            return;
+        }
+    }
+}
 
 /// The track a subtitle file is listed as.
 fn sidecar_track(number: usize, file: &Sidecar) -> Track {
@@ -699,6 +985,9 @@ fn read_loop(mut source: Source, reading: Reading) {
     let mut sidecar: Option<String> = None;
     // The subtitle files whose fonts have been sent.
     let mut with_fonts: Vec<String> = Vec::new();
+    // The sound tracks in files next to the video, likewise, and the one of them playing.
+    let mut sounds: Vec<OutsideSound> = Vec::new();
+    let mut outside: Option<Outside> = None;
     // The output device is opened here because its stream must stay on the thread that made it.
     let mut sound = None;
     if let Some(track) = source.audio_info().filter(|_| sound_wanted) {
@@ -731,19 +1020,14 @@ fn read_loop(mut source: Source, reading: Reading) {
             return;
         }
         // Sound held back while the device was full moves on with every packet read.
-        if let Some(path) = &mut sound {
-            path.settle();
-        }
+        tend(&mut sound, &mut outside, start, generation, &shared);
         let command = if idle {
-            match commands.recv_timeout(Duration::from_millis(50)) {
+            // Nothing left to read of the video, but the end of the sound may still be
+            // waiting, and a sound file goes on being read.
+            let wait = if outside.is_some() { 10 } else { 50 };
+            match commands.recv_timeout(Duration::from_millis(wait)) {
                 Ok(c) => Some(c),
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    // Nothing left to read, but the end of the sound may still be waiting.
-                    if let Some(path) = &mut sound {
-                        path.settle();
-                    }
-                    continue;
-                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
             }
         } else {
@@ -757,6 +1041,10 @@ fn read_loop(mut source: Source, reading: Reading) {
             sidecars = found;
             continue;
         }
+        if let Some(ReaderCommand::Sounds(found)) = command {
+            sounds = found;
+            continue;
+        }
         if let Some(ReaderCommand::Seek {
             to,
             generation: g,
@@ -767,22 +1055,54 @@ fn read_loop(mut source: Source, reading: Reading) {
             generation = g;
             start = to;
             idle = false;
-            if let Some(index) = audio
-                && let Some(path) = &mut sound
-            {
-                let format = path.output.format().clone();
-                let reopened = source.select_audio(index).and_then(|()| {
-                    AudioDecoder::open(&source, format.sample_rate, format.channels)
-                });
-                match reopened {
-                    Ok(decoder) => {
-                        path.decoder = decoder;
-                        if let Some(track) = source.audio_info() {
-                            let _ = news.send(FromReader::Sound(track));
-                        }
-                    }
-                    Err(e) => eprintln!("[warn] cannot switch the sound track: {e}"),
+            if let Some(index) = audio.filter(|_| sound_wanted) {
+                // A track of a file next to the video, or a stream inside it.
+                let switched = if index >= SOUND_BASE {
+                    sounds
+                        .get((index - SOUND_BASE) as usize)
+                        .ok_or_else(|| "there is no such sound file".to_string())
+                        .and_then(|file| Outside::open(file, index))
+                        .and_then(|file| {
+                            take_sound(&mut sound, &file.source, &news)?;
+                            // The video's own sound is no longer read.
+                            source.no_audio();
+                            outside = Some(file);
+                            Ok(())
+                        })
+                } else if sound.is_some() {
+                    let before = source.audio_index();
+                    source
+                        .select_audio(index)
+                        .map_err(|e| e.to_string())
+                        .and_then(|()| take_sound(&mut sound, &source, &news))
+                        .map(|()| outside = None)
+                        .inspect_err(|_| {
+                            if outside.is_some() {
+                                source.no_audio();
+                            } else if let Some(before) = before {
+                                let _ = source.select_audio(before);
+                            }
+                        })
+                } else {
+                    Err("there is no sound device".to_string())
+                };
+                if let Err(e) = switched {
+                    eprintln!("[warn] cannot switch the sound track: {e}");
                 }
+                if let Some(path) = &mut sound {
+                    // A track that begins late is waited for in full when it is a file of
+                    // its own: nothing in the video's packets would cut the wait short.
+                    path.most_silence = if outside.is_some() {
+                        f64::MAX
+                    } else {
+                        MAX_LEADING_SILENCE
+                    };
+                }
+                let playing = match &outside {
+                    Some(file) => Some(file.track),
+                    None => source.audio_index().filter(|_| sound.is_some()),
+                };
+                let _ = news.send(FromReader::Playing(playing));
             }
             if let Some(choice) = subtitle {
                 // A file next to the video, or a stream inside it.
@@ -814,6 +1134,9 @@ fn read_loop(mut source: Source, reading: Reading) {
                 send_sidecar(path, generation, &news);
             }
             let moved = source.seek(to);
+            if let Some(file) = &mut outside {
+                file.seek(to);
+            }
             // Sound is silenced first: once the video thread sees the flush, the device's clock
             // no longer reports the old position.
             if let Some(path) = &mut sound {
@@ -830,10 +1153,13 @@ fn read_loop(mut source: Source, reading: Reading) {
 
         let failed = match source.read() {
             Ok(Read::Video(packet)) => {
-                video.push(packet, generation, &shared);
+                video.push(packet, generation, &shared, || {
+                    tend(&mut sound, &mut outside, start, generation, &shared)
+                });
                 None
             }
-            Ok(Read::Audio(packet)) => match &mut sound {
+            // The video's own sound, unless a file next to it is playing instead.
+            Ok(Read::Audio(packet)) => match sound.as_mut().filter(|_| outside.is_none()) {
                 Some(path) => path
                     .decoder
                     .send(Some(packet))
@@ -850,11 +1176,10 @@ fn read_loop(mut source: Source, reading: Reading) {
             }
             Ok(Read::End) => {
                 video.push_control(Item::End);
-                if let Some(path) = &mut sound {
+                if let Some(path) = sound.as_mut().filter(|_| outside.is_none()) {
                     let _ = path.decoder.send(None);
                     let _ = path.pump(start, generation, &shared);
-                    path.ending = true;
-                    path.settle();
+                    path.finish(start);
                 }
                 idle = true;
                 None
@@ -997,17 +1322,27 @@ fn render_loop(
     for (name, data) in source.fonts() {
         gpu.add_font(&name, &data);
     }
-    // Subtitle files next to the video are looked for on the side: listing a folder can wait
-    // on the system asking the user for access to it, and the film should not wait with it.
+    // Subtitle and sound files next to the video are looked for on the side: listing a
+    // folder can wait on the system asking the user for access to it, and the film should not
+    // wait with it. The sound files are also opened there, to learn what tracks they hold.
     let (found_tx, found_sidecars) = channel();
+    let (sounds_tx, found_sounds) = channel();
     {
         let path = options.path.clone();
+        let sound = options.sound;
         thread::Builder::new()
-            .name("subtitle files".into())
+            .name("files beside".into())
             .spawn(move || {
                 let _ = found_tx.send(sidecars::find(&path));
+                let mut tracks: Vec<(Track, OutsideSound)> = Vec::new();
+                if sound {
+                    for file in sidecars::find_sound(&path) {
+                        tracks.extend(outside_tracks(&file, tracks.len()));
+                    }
+                }
+                let _ = sounds_tx.send(tracks);
             })
-            .expect("spawn the subtitle file search");
+            .expect("spawn the search for files beside the video");
     }
     // Sound: the track chosen for this file before; else in the language asked for, when the
     // file has it; otherwise as the file prefers.
@@ -1129,6 +1464,10 @@ fn render_loop(
     // for the ones near the video came back (their tracks are numbered after the found ones).
     let mut sidecar_files: Vec<String> = Vec::new();
     let mut opened_early: Vec<String> = Vec::new();
+    // The same for sound files: one entry for each of their tracks.
+    let mut sounds_known = false;
+    let mut sound_files: Vec<OutsideSound> = Vec::new();
+    let mut sounds_opened_early: Vec<String> = Vec::new();
     // Subtitles glide out of the controls' way rather than jump.
     let mut lift_wanted = options.subtitle_lift;
     let mut lift = options.subtitle_lift;
@@ -1175,7 +1514,10 @@ fn render_loop(
                     let known = tracks
                         .iter()
                         .any(|t| t.kind == TrackKind::Audio && t.index == index);
-                    if known && sound.is_some() && audio_track != Some(index) {
+                    // A sound file can be put on even when the video has no sound of its
+                    // own, and so no device has been opened yet.
+                    let possible = options.sound && (sound.is_some() || index >= SOUND_BASE);
+                    if known && possible && audio_track != Some(index) {
                         audio_track = Some(index);
                         jump = Some((timeline.position(), Some(index), None));
                     }
@@ -1229,8 +1571,8 @@ fn render_loop(
                                 .unwrap_or_default();
                             let opened = Sidecar {
                                 path: file.clone(),
-                                language: String::new(),
                                 title,
+                                ..Sidecar::default()
                             };
                             tracks.push(sidecar_track(sidecar_files.len(), &opened));
                             sidecar_files.push(file);
@@ -1240,6 +1582,36 @@ fn render_loop(
                         }
                     };
                     pending.push_back(Command::SelectSubtitle(Some(SIDECAR_BASE + number as i32)));
+                }
+                Ok(Command::AddSound(file)) if !sounds_known => sounds_opened_early.push(file),
+                Ok(Command::AddSound(file)) => {
+                    let first = match sound_files.iter().position(|known| known.path == file) {
+                        Some(number) => Some(number),
+                        None => {
+                            let title = std::path::Path::new(&file)
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_default();
+                            let opened = Sidecar {
+                                path: file,
+                                title,
+                                ..Sidecar::default()
+                            };
+                            let number = sound_files.len();
+                            let added = outside_tracks(&opened, number);
+                            let any = !added.is_empty();
+                            for (track, file) in added {
+                                tracks.push(track);
+                                sound_files.push(file);
+                            }
+                            let _ =
+                                reader_commands.send(ReaderCommand::Sounds(sound_files.clone()));
+                            any.then_some(number)
+                        }
+                    };
+                    if let Some(number) = first {
+                        pending.push_back(Command::SelectAudio(SOUND_BASE + number as i32));
+                    }
                 }
                 Ok(Command::SetDolbyVision(apply)) => {
                     gpu.set_dolby_vision(apply);
@@ -1307,6 +1679,20 @@ fn render_loop(
             // What was opened by hand meanwhile comes after, and so is what ends up showing.
             pending.extend(opened_early.drain(..).map(Command::AddSubtitles));
         }
+        // The search for sound files next to the video has come back.
+        if !sounds_known && let Ok(found) = found_sounds.try_recv() {
+            sounds_known = true;
+            let wanted = sound_file_wanted(&options, &tracks, &found);
+            for (track, file) in found {
+                tracks.push(track);
+                sound_files.push(file);
+            }
+            let _ = reader_commands.send(ReaderCommand::Sounds(sound_files.clone()));
+            if let Some(n) = wanted {
+                pending.push_back(Command::SelectAudio(SOUND_BASE + n as i32));
+            }
+            pending.extend(sounds_opened_early.drain(..).map(Command::AddSound));
+        }
         // Subtitles and track changes from the reading thread.
         while let Ok(item) = news.try_recv() {
             match item {
@@ -1327,6 +1713,11 @@ fn render_loop(
                     if let Some(sound) = &mut sound {
                         sound.track = track;
                     }
+                }
+                FromReader::Playing(track) => audio_track = track,
+                FromReader::Device(setup) => {
+                    timeline.adopt(setup.clock, setup.controls);
+                    sound = Some(setup.sound);
                 }
             }
         }
@@ -1449,6 +1840,11 @@ fn render_loop(
         }
         if s.tracks.len() != tracks.len() {
             s.tracks = tracks.clone();
+            s.sound_places = sound_files
+                .iter()
+                .enumerate()
+                .map(|(n, file)| (SOUND_BASE + n as i32, file.place.clone()))
+                .collect();
         }
         s.audio_track = audio_track;
         s.subtitle_track = subtitle_track;
@@ -1460,4 +1856,118 @@ fn render_loop(
     let _ = reader_thread.join();
     let _ = video_thread.join();
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn options(language: &str) -> Options {
+        Options {
+            path: String::new(),
+            hardware: false,
+            mode: HdrMode::default(),
+            dolby_vision: true,
+            quality: Quality::High,
+            renderer_options: String::new(),
+            start: 0.0,
+            sound: true,
+            audio_delay: 0.0,
+            volume: 1.0,
+            muted: false,
+            subtitle_lift: 0.0,
+            subtitle_scale: 1.0,
+            subtitle_nits: 203.0,
+            audio_language: language.into(),
+            subtitle_language: String::new(),
+            audio_track: None,
+            subtitles: None,
+            sound_place: None,
+            own_sound: false,
+        }
+    }
+
+    fn track(index: i32, language: &str) -> Track {
+        Track {
+            index,
+            kind: TrackKind::Audio,
+            codec: String::new(),
+            profile: String::new(),
+            language: language.into(),
+            title: String::new(),
+            layout: String::new(),
+            channels: 2,
+            sample_rate: 48000,
+            is_default: false,
+            forced: false,
+            hearing_impaired: false,
+            bitmap: false,
+        }
+    }
+
+    fn beside(files: &[(&str, &str)]) -> Vec<(Track, OutsideSound)> {
+        files
+            .iter()
+            .enumerate()
+            .map(|(n, (place, language))| {
+                let file = OutsideSound {
+                    path: String::new(),
+                    stream: 0,
+                    place: place.to_string(),
+                };
+                (track(SOUND_BASE + n as i32, language), file)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_sound_file_is_put_on_for_the_language_or_for_want_of_any_sound() {
+        let found = beside(&[("ENG Sound|.mka", "eng"), ("RUS Sound/A|.mka", "rus")]);
+        let japanese = [track(1, "jpn")];
+        // No language asked for: the video's own sound stays.
+        assert_eq!(sound_file_wanted(&options(""), &japanese, &found), None);
+        // Russian asked for, and the video has none of its own.
+        assert_eq!(
+            sound_file_wanted(&options("rus"), &japanese, &found),
+            Some(1)
+        );
+        // The video has it: its own track is the one to play.
+        let both = [track(1, "jpn"), track(2, "ru")];
+        assert_eq!(sound_file_wanted(&options("rus"), &both, &found), None);
+        // A language no file is in.
+        assert_eq!(sound_file_wanted(&options("deu"), &japanese, &found), None);
+        // A video without sound takes the file in the language, or else the first.
+        assert_eq!(sound_file_wanted(&options("rus"), &[], &found), Some(1));
+        assert_eq!(sound_file_wanted(&options(""), &[], &found), Some(0));
+        assert_eq!(sound_file_wanted(&options(""), &[], &[]), None);
+    }
+
+    #[test]
+    fn what_was_chosen_by_hand_comes_before_the_language() {
+        let found = beside(&[("RUS Sound/A|.mka", "rus"), ("RUS Sound/B|.mka", "rus")]);
+        let japanese = [track(1, "jpn")];
+        // The dubbing chosen for the episode before.
+        let chosen = Options {
+            sound_place: Some("RUS Sound/B|.mka".into()),
+            ..options("rus")
+        };
+        assert_eq!(sound_file_wanted(&chosen, &japanese, &found), Some(1));
+        // This episode does not have it: back to the rule.
+        let missing = Options {
+            sound_place: Some("RUS Sound/C|.mka".into()),
+            ..options("rus")
+        };
+        assert_eq!(sound_file_wanted(&missing, &japanese, &found), Some(0));
+        // The video's own sound was chosen by hand, here or in the episode before.
+        let own = Options {
+            own_sound: true,
+            ..options("rus")
+        };
+        assert_eq!(sound_file_wanted(&own, &japanese, &found), None);
+        let this_track = Options {
+            audio_track: Some(1),
+            ..options("rus")
+        };
+        assert_eq!(sound_file_wanted(&this_track, &japanese, &found), None);
+    }
 }

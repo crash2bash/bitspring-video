@@ -806,7 +806,9 @@ private struct Transport: View {
                 .help(L("Subtitles", "Субтитры"))
             }
 
-            if status.audioTracks.count > 1 {
+            // More than one track to choose from, or one that is not playing (a sound file
+            // beside the video that could not be put on by itself).
+            if status.audioTracks.count > 1 || status.audioTracks.contains(where: { $0.id != status.audioTrack }) {
                 Menu {
                     Picker(L("Sound", "Звук"), selection: soundChoice) {
                         ForEach(status.audioTracks) { track in

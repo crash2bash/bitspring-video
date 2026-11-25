@@ -78,6 +78,8 @@ struct Running {
     queue: Queue,
     /// Subtitle files opened together with a video: shown once the video starts.
     subtitles_to_add: Vec<String>,
+    /// Sound files opened along with a video, to be played with it.
+    sounds_to_add: Vec<String>,
     // Carried from one file to the next.
     volume: f32,
     muted: bool,
@@ -207,22 +209,31 @@ impl Running {
     /// Something was opened: by a drop, from the dialog, from Finder, on the command line.
     /// A video is played, and its folder becomes the list around it; a folder, a playlist or
     /// several files become the list, and its first file is played once it has been read.
-    /// Subtitle files are shown with the video: the one opened with them, or the one playing.
+    /// Subtitle and sound files go with the video: the one opened with them, or the one playing.
     fn open(&mut self, paths: Vec<String>, settings: &Settings, start: Option<f64>) {
         let (subtitles, others): (Vec<String>, Vec<String>) = paths
             .into_iter()
             .partition(|path| sidecars::is_subtitle_file(path));
+        let (sounds, others): (Vec<String>, Vec<String>) = others
+            .into_iter()
+            .partition(|path| sidecars::is_sound_file(path));
         if others.is_empty() {
             if self.session.is_some() {
                 for file in subtitles {
                     self.send(Command::AddSubtitles(file));
                 }
+                for file in sounds {
+                    self.send(Command::AddSound(file));
+                }
             } else if !subtitles.is_empty() {
                 self.error = Some("Subtitles go with a video: open the video first.".into());
+            } else if !sounds.is_empty() {
+                self.error = Some("A sound file goes with a video: open the video first.".into());
             }
             return;
         }
         self.subtitles_to_add = subtitles;
+        self.sounds_to_add = sounds;
         let others = others.into_iter().map(PathBuf::from).collect();
         if let Some(file) = self.queue.open(others) {
             self.play(&file.to_string_lossy(), settings, start);
@@ -280,6 +291,8 @@ impl Running {
             subtitle_language: self.prefs.subtitle_language.clone(),
             audio_track: recalled.audio_track,
             subtitles: recalled.subtitles,
+            sound_place: recalled.sound_place,
+            own_sound: recalled.own_sound,
         };
         // SAFETY: `Running` drops the session before the layer, and `open` drops the previous
         // session before starting another on the same layer.
@@ -293,6 +306,9 @@ impl Running {
         };
         for file in self.subtitles_to_add.drain(..) {
             player.send(Command::AddSubtitles(file));
+        }
+        for file in self.sounds_to_add.drain(..) {
+            player.send(Command::AddSound(file));
         }
         self.window.set_title(&file_name);
         self.session = Some(Session {
@@ -370,7 +386,16 @@ impl Running {
     fn send(&mut self, command: Command) {
         match command {
             // A track chosen by hand is remembered for this file.
-            Command::SelectAudio(track) => self.memory.chose_audio(track),
+            Command::SelectAudio(track) => {
+                // A sound file next to the video is remembered by where it is, so that the
+                // next episode's file from the same place can be put on with it.
+                let place = self.session.as_ref().and_then(|session| {
+                    let places = session.player.status().sound_places;
+                    places.into_iter().find(|(index, _)| *index == track)
+                });
+                self.memory
+                    .chose_audio(track, place.as_ref().map(|(_, place)| place.as_str()));
+            }
             Command::SelectSubtitle(track) => self.memory.chose_subtitles(track),
             // Going anywhere else answers the note about where the file was picked up.
             Command::SeekTo(_) | Command::SeekBy(_) => {
@@ -518,9 +543,19 @@ impl Running {
                     println!("Video:   {media}");
                     session.printed_media = media;
                 }
-                let sound = match &status.sound {
-                    Some(s) => report::sound_path(&s.track, &s.device),
-                    None => "none (the picture runs on the system clock)".to_string(),
+                // A sound file next to the video is named: its format alone does not say
+                // which of several it is.
+                let beside = status.audio_track.and_then(|playing| {
+                    let outside = status.sound_places.iter().any(|(i, _)| *i == playing);
+                    let track = status.tracks.iter().find(|t| t.index == playing);
+                    track.filter(|_| outside).map(|t| t.title.clone())
+                });
+                let sound = match (&status.sound, beside) {
+                    (Some(s), Some(file)) => {
+                        format!("{}, from {file}", report::sound_path(&s.track, &s.device))
+                    }
+                    (Some(s), None) => report::sound_path(&s.track, &s.device),
+                    (None, _) => "none (the picture runs on the system clock)".to_string(),
                 };
                 if sound != session.printed_sound {
                     println!("Sound:   {sound}");
@@ -728,6 +763,7 @@ impl App {
             memory: Memory::beside(&self.settings.preferences),
             queue: Queue::default(),
             subtitles_to_add: Vec::new(),
+            sounds_to_add: Vec::new(),
         };
         if !self.settings.paths.is_empty() {
             running.open(

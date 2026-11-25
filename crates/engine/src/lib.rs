@@ -323,6 +323,21 @@ impl Source {
             .ok_or_else(|| Error(text(&error)))
     }
 
+    /// Open a sound file kept next to the video. Only its sound is read, and its times are
+    /// taken as counting from the video's start.
+    pub fn open_sound(path: &str) -> Result<Source, Error> {
+        let c_path =
+            CString::new(path).map_err(|_| Error("the path contains a NUL byte".into()))?;
+        let mut error = [0 as c_char; 256];
+        // SAFETY: both buffers outlive the call.
+        let ptr = unsafe {
+            ffi::bsv_source_open_sound(c_path.as_ptr(), error.as_mut_ptr(), error.len() as c_int)
+        };
+        NonNull::new(ptr)
+            .map(|ptr| Source { ptr })
+            .ok_or_else(|| Error(text(&error)))
+    }
+
     pub fn has_video(&self) -> bool {
         // SAFETY: plain call on an owned source.
         unsafe { ffi::bsv_source_has_video(self.ptr.as_ptr()) != 0 }
@@ -399,6 +414,12 @@ impl Source {
             0 => Ok(()),
             _ => Err(Error(format!("stream {index} is not a sound track"))),
         }
+    }
+
+    /// Read no sound from this file from now on: the sound comes from a file beside it.
+    pub fn no_audio(&mut self) {
+        // SAFETY: plain call on an owned source.
+        unsafe { ffi::bsv_source_select_audio(self.ptr.as_ptr(), -1) };
     }
 
     /// Read this subtitle track from now on, or none.

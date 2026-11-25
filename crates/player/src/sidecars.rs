@@ -1,15 +1,20 @@
-//! Subtitle files that belong to a video without being inside it.
+//! Subtitle and sound files that belong to a video without being inside it.
 //!
 //! A file is taken to belong when its name begins with the video's name: "film.srt",
-//! "film.ru.ass", "film [Group].ass". It may sit beside the video or a few folders below it,
-//! the way releases with several translations are laid out ("Subs/", "RUS Subs/[Group]/").
-//! Fonts for styled subtitles are looked for in a "Fonts" folder near the subtitle file.
+//! "film.ru.ass", "film [Group].ass", "film.mka". It may sit beside the video or a few folders
+//! below it, the way releases with several translations are laid out ("Subs/",
+//! "RUS Subs/[Group]/", "RUS Sound/[Studio]/"). Fonts for styled subtitles are looked for in a
+//! "Fonts" folder near the subtitle file.
 
 use std::path::{Path, PathBuf};
 
 use crate::language;
 
 const ENDINGS: [&str; 4] = ["srt", "ass", "ssa", "vtt"];
+const SOUND_ENDINGS: [&str; 18] = [
+    "mka", "ac3", "eac3", "ec3", "dts", "dtshd", "thd", "truehd", "aac", "m4a", "flac", "opus",
+    "ogg", "oga", "mp3", "mp2", "wav", "wv",
+];
 const FONT_ENDINGS: [&str; 4] = ["ttf", "otf", "ttc", "otc"];
 /// How many folders below the video's a subtitle file may be: "Subs/Rus/[Group]".
 const DEPTH: usize = 3;
@@ -22,19 +27,54 @@ const MOST_FILES: usize = 32;
 const MOST_FONTS: usize = 400;
 const LARGEST_FONT: u64 = 48 * 1024 * 1024;
 
-/// One subtitle file found for a video.
-#[derive(Clone, Debug, PartialEq)]
+/// One subtitle or sound file found for a video.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Sidecar {
     pub path: String,
     /// The language its name or its folder suggests, as an ISO 639 code; empty when neither does.
     pub language: String,
-    /// What to call it in a menu: its name, with its folder when it is not beside the video.
+    /// What to call it in a menu. A subtitle file: its name, with its folder when it is not
+    /// beside the video. A sound file below the video: its folders, which say whose it is.
     pub title: String,
+    /// Where it sits against the video: its folders below the video's, and what its name adds
+    /// to the video's. The next episode's file of the same translation sits in the same place.
+    pub place: String,
+}
+
+/// Which of the two kinds of file is looked for.
+#[derive(Clone, Copy, PartialEq)]
+enum Kind {
+    Subtitles,
+    Sound,
+}
+
+impl Kind {
+    fn takes(self, path: &Path) -> bool {
+        ending(path).is_some_and(|e| match self {
+            Kind::Subtitles => ENDINGS.contains(&e.as_str()),
+            Kind::Sound => SOUND_ENDINGS.contains(&e.as_str()),
+        })
+    }
+
+    /// A folder that by its name holds files of this kind.
+    fn names(self, folder: &str) -> bool {
+        let folder = folder.to_lowercase();
+        let words: &[&str] = match self {
+            Kind::Subtitles => &["sub", "суб", "титр", "caption", "надпис"],
+            Kind::Sound => &["sound", "audio", "звук", "озвуч", "dub", "дубл", "voice"],
+        };
+        words.iter().any(|word| folder.contains(word))
+    }
 }
 
 /// Whether a file is one of the kinds of subtitle file the player reads, going by its name.
 pub fn is_subtitle_file(path: &str) -> bool {
-    ending(Path::new(path)).is_some_and(|e| ENDINGS.contains(&e.as_str()))
+    Kind::Subtitles.takes(Path::new(path))
+}
+
+/// Whether a file holds sound and no picture, going by its name.
+pub fn is_sound_file(path: &str) -> bool {
+    Kind::Sound.takes(Path::new(path))
 }
 
 fn ending(path: &Path) -> Option<String> {
@@ -45,21 +85,19 @@ fn visible(name: &str) -> bool {
     !name.starts_with('.')
 }
 
-/// A folder that by its name holds subtitles.
-fn named_like_subtitles(name: &str) -> bool {
-    let name = name.to_lowercase();
-    ["sub", "суб", "титр", "caption", "надпис"]
-        .iter()
-        .any(|word| name.contains(word))
-}
-
-/// The language a subtitle file is in, as far as names can tell: first what follows the
+/// The language a subtitle or sound file is in, as far as names can tell: first what follows the
 /// video's name in its own ("film.ru.srt", "film.eng.forced.srt"), then the folders it is
 /// in ("RUS Subs").
 fn language_of(rest: &str, folders: &[String]) -> String {
-    // Between dots, any short word is taken for a code, known or not ("film.tlh.srt").
+    // Between dots, any short word is taken for a code, known or not ("film.tlh.srt"),
+    // unless it is the name of a sound format ("film.dts.mka").
+    const FORMATS: [&str; 11] = [
+        "dts", "aac", "ogg", "mka", "wav", "dub", "thd", "pcm", "ddp", "eac", "hd",
+    ];
     let between_dots = rest.split('.').find(|part| {
-        (2..=3).contains(&part.len()) && part.chars().all(|c| c.is_ascii_alphabetic())
+        (2..=3).contains(&part.len())
+            && part.chars().all(|c| c.is_ascii_alphabetic())
+            && !FORMATS.contains(part)
     });
     if let Some(code) = between_dots {
         return code.to_ascii_lowercase();
@@ -77,6 +115,15 @@ fn language_of(rest: &str, folders: &[String]) -> String {
 /// The subtitle files that belong to `video`: those beside it first, then those in folders
 /// below it, each group in the order of their names.
 pub fn find(video: &str) -> Vec<Sidecar> {
+    find_of(Kind::Subtitles, video)
+}
+
+/// The sound files that belong to `video`, in the same order.
+pub fn find_sound(video: &str) -> Vec<Sidecar> {
+    find_of(Kind::Sound, video)
+}
+
+fn find_of(kind: Kind, video: &str) -> Vec<Sidecar> {
     let path = Path::new(video);
     let (Some(folder), Some(stem)) = (path.parent(), path.file_stem().and_then(|s| s.to_str()))
     else {
@@ -91,6 +138,7 @@ pub fn find(video: &str) -> Vec<Sidecar> {
     let mut found: Vec<(usize, Sidecar)> = Vec::new();
     let mut folders_left = MOST_FOLDERS;
     look_in(
+        kind,
         folder,
         &stem,
         &mut Vec::new(),
@@ -103,6 +151,7 @@ pub fn find(video: &str) -> Vec<Sidecar> {
 }
 
 fn look_in(
+    kind: Kind,
     folder: &Path,
     stem: &str,
     below: &mut Vec<String>,
@@ -125,7 +174,7 @@ fn look_in(
             folders.push((name, path));
             continue;
         }
-        if !ending(&path).is_some_and(|e| ENDINGS.contains(&e.as_str())) {
+        if !kind.takes(&path) {
             continue;
         }
         // A link is taken only if it leads to a file on this machine.
@@ -142,10 +191,21 @@ fn look_in(
         }
         // What stands between the video's name and the ending.
         let middle = rest.rsplit_once('.').map_or("", |(middle, _)| middle);
-        let title = if below.is_empty() {
-            name.clone()
-        } else {
-            format!("{}/{name}", below.join("/"))
+        let title = match kind {
+            _ if below.is_empty() => name.clone(),
+            Kind::Subtitles => format!("{}/{name}", below.join("/")),
+            // A sound file is named as the video is: its folders are what tells it apart.
+            Kind::Sound => {
+                let own = name
+                    .get(stem.len()..name.len() + middle.len() - rest.len())
+                    .unwrap_or(middle)
+                    .trim_matches(|c: char| c.is_whitespace() || ".-_".contains(c));
+                [below.join("/"), own.to_string()]
+                    .into_iter()
+                    .filter(|part| !part.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            }
         };
         found.push((
             below.len(),
@@ -153,6 +213,7 @@ fn look_in(
                 path: path.to_string_lossy().into_owned(),
                 language: language_of(middle, below),
                 title,
+                place: format!("{}|{rest}", below.join("/")),
             },
         ));
     }
@@ -161,7 +222,7 @@ fn look_in(
     }
     // Beside the video there may be a great many folders that have nothing to do with it.
     if below.is_empty() && folders.len() > FEW_FOLDERS {
-        folders.retain(|(name, _)| named_like_subtitles(name) || name.to_lowercase() == stem);
+        folders.retain(|(name, _)| kind.names(name) || name.to_lowercase() == stem);
     }
     folders.sort();
     for (name, path) in folders {
@@ -170,7 +231,7 @@ fn look_in(
         }
         *folders_left -= 1;
         below.push(name);
-        look_in(&path, stem, below, folders_left, found);
+        look_in(kind, &path, stem, below, folders_left, found);
         below.pop();
     }
 }
@@ -339,7 +400,58 @@ mod tests {
     }
 
     #[test]
+    fn sound_files_are_found_and_named_by_where_they_are() {
+        let folder = scratch("sound");
+        let video = touch(folder.join("[G] Show - 02 [1080p].mkv"));
+        touch(folder.join("RUS Sound/[AniLibria]/[G] Show - 02 [1080p].mka"));
+        touch(folder.join("RUS Sound/[AniDub]/[G] Show - 02 [1080p].AC3"));
+        touch(folder.join("Sound/[G] Show - 02 [1080p].Studio Band.mka"));
+        touch(folder.join("[G] Show - 02 [1080p].eng.flac"));
+        touch(folder.join("RUS Sound/[AniLibria]/[G] Show - 03 [1080p].mka"));
+        touch(folder.join("RUS Subs/[G] Show - 02 [1080p].ass"));
+        touch(folder.join("[G] Show - 02 [1080p].txt"));
+        let found = find_sound(video.to_str().unwrap());
+        assert_eq!(
+            titles(&found),
+            [
+                ("[G] Show - 02 [1080p].eng.flac", "eng"),
+                ("RUS Sound/[AniDub]", "rus"),
+                ("RUS Sound/[AniLibria]", "rus"),
+                ("Sound Studio Band", ""),
+            ]
+        );
+        // The same translation of the next episode sits in the same place.
+        let next = touch(folder.join("[G] Show - 03 [1080p].mkv"));
+        let places =
+            |found: &[Sidecar]| -> Vec<String> { found.iter().map(|s| s.place.clone()).collect() };
+        assert_eq!(
+            places(&found),
+            [
+                "|.eng.flac",
+                "RUS Sound/[AniDub]|.ac3",
+                "RUS Sound/[AniLibria]|.mka",
+                "Sound|.studio band.mka"
+            ]
+        );
+        assert_eq!(
+            places(&find_sound(next.to_str().unwrap())),
+            ["RUS Sound/[AniLibria]|.mka"]
+        );
+        // A sound format in the name is not a language: the folder still says which it is.
+        let named = touch(folder.join("RUS Sound/[AniDub]/[G] Show - 03 [1080p].dts.mka"));
+        let found = find_sound(next.to_str().unwrap());
+        assert_eq!(found[0].path, named.to_string_lossy());
+        assert_eq!(found[0].language, "rus");
+        std::fs::remove_file(named).unwrap();
+        // Subtitle files are not sound files, and the other way round.
+        assert_eq!(find(video.to_str().unwrap()).len(), 1);
+    }
+
+    #[test]
     fn subtitle_files_are_known_by_their_ending() {
+        assert!(is_sound_file("/films/Film.MKA"));
+        assert!(!is_sound_file("film.mkv"));
+        assert!(!is_sound_file("film.srt"));
         assert!(is_subtitle_file("/films/Film.RU.ASS"));
         assert!(is_subtitle_file("film.srt"));
         assert!(!is_subtitle_file("film.mkv"));

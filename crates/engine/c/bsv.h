@@ -93,6 +93,8 @@ struct bsv_frame {
 bsv_source *bsv_source_open(const char *url, char *error, int error_len);
 // A subtitle file kept next to the video: only its subtitle stream is read.
 bsv_source *bsv_source_open_sidecar(const char *url, char *error, int error_len);
+// A sound file kept next to the video: only its sound is read, and no picture is looked for.
+bsv_source *bsv_source_open_sound(const char *url, char *error, int error_len);
 void bsv_source_close(bsv_source *s);
 int bsv_source_has_video(const bsv_source *s);
 // 1 and fills `out` when the file has a sound track this build can decode, else 0.
@@ -110,7 +112,7 @@ int bsv_source_track(const bsv_source *s, int n, struct bsv_track *out);
 int bsv_source_audio_index(const bsv_source *s);
 int bsv_source_subtitle_index(const bsv_source *s);
 // Read another stream from now on. The matching decoder must be opened again afterwards.
-int bsv_source_select_audio(bsv_source *s, int index);
+int bsv_source_select_audio(bsv_source *s, int index);   // -1 for none
 int bsv_source_select_subtitle(bsv_source *s, int index); // -1 for none
 // The n-th font shipped inside the file; pointers are valid while the source is open.
 int bsv_source_font(const bsv_source *s, int n, const char **name, const void **data, int *len);

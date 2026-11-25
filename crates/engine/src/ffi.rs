@@ -156,6 +156,11 @@ unsafe extern "C" {
         error: *mut c_char,
         error_len: c_int,
     ) -> *mut bsv_source;
+    pub fn bsv_source_open_sound(
+        url: *const c_char,
+        error: *mut c_char,
+        error_len: c_int,
+    ) -> *mut bsv_source;
     pub fn bsv_source_close(s: *mut bsv_source);
     pub fn bsv_source_has_video(s: *const bsv_source) -> c_int;
     pub fn bsv_source_audio_info(s: *const bsv_source, out: *mut bsv_audio_info) -> c_int;

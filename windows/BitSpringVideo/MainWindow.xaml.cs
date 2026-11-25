@@ -322,7 +322,10 @@ public sealed partial class MainWindow : Window
 
         SubtitlesButton.Visibility = s.SubtitleTracks.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         SubtitlesGlyph.Foreground = s.SubtitleTrack == null ? Resource("QuietBrush") : Resource("PorcelainBrush");
-        SoundButton.Visibility = s.AudioTracks.Count > 1 ? Visibility.Visible : Visibility.Collapsed;
+        // More than one track to choose from, or one that is not playing (a sound file beside
+        // the video that could not be put on by itself).
+        SoundButton.Visibility = s.AudioTracks.Count > 1 || s.AudioTracks.Any(t => t.Id != s.AudioTrack)
+            ? Visibility.Visible : Visibility.Collapsed;
 
         FullscreenGlyph.Glyph = IsFullscreen ? "" : "";
         Tip(FullscreenButton, IsFullscreen ? L("Leave full screen", "Выйти из полного экрана") : L("Full screen", "На весь экран"));

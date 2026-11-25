@@ -94,6 +94,8 @@ pub struct Host {
     queue: Queue,
     /// Subtitle files opened together with a video: shown once the video starts.
     subtitles_to_add: Vec<String>,
+    /// Sound files opened along with a video, to be played with it.
+    sounds_to_add: Vec<String>,
     /// The display as the system reports it, and which one the window is on.
     display: Display,
     monitor: u64,
@@ -158,6 +160,7 @@ impl Host {
             memory: Memory::beside(&preferences_path),
             queue: Queue::default(),
             subtitles_to_add: Vec::new(),
+            sounds_to_add: Vec::new(),
             display,
             monitor: 0,
             last_display_poll: Instant::now(),
@@ -200,7 +203,16 @@ impl Host {
     fn send(&mut self, command: Command) {
         match command {
             // A track chosen by hand is remembered for this file.
-            Command::SelectAudio(track) => self.memory.chose_audio(track),
+            Command::SelectAudio(track) => {
+                // A sound file next to the video is remembered by where it is, so that the
+                // next episode's file from the same place can be put on with it.
+                let place = self.session.as_ref().and_then(|session| {
+                    let places = session.player.status().sound_places;
+                    places.into_iter().find(|(index, _)| *index == track)
+                });
+                self.memory
+                    .chose_audio(track, place.as_ref().map(|(_, place)| place.as_str()));
+            }
             Command::SelectSubtitle(track) => self.memory.chose_subtitles(track),
             // Going anywhere else answers the note about where the file was picked up.
             Command::SeekTo(_) | Command::SeekBy(_) => {
@@ -231,22 +243,31 @@ impl Host {
 
     /// Something was opened: a video is played and its folder becomes the list around it; a
     /// folder, a playlist or several files become the list, played once it has been read.
-    /// Subtitle files are shown with the video: the one opened with them, or the one playing.
+    /// Subtitle and sound files go with the video: the one opened with them, or the one playing.
     fn open(&mut self, paths: Vec<String>) {
         let (subtitles, others): (Vec<String>, Vec<String>) = paths
             .into_iter()
             .partition(|path| sidecars::is_subtitle_file(path));
+        let (sounds, others): (Vec<String>, Vec<String>) = others
+            .into_iter()
+            .partition(|path| sidecars::is_sound_file(path));
         if others.is_empty() {
             if self.session.is_some() {
                 for file in subtitles {
                     self.send(Command::AddSubtitles(file));
                 }
+                for file in sounds {
+                    self.send(Command::AddSound(file));
+                }
             } else if !subtitles.is_empty() {
                 self.error = Some("Subtitles go with a video: open the video first.".into());
+            } else if !sounds.is_empty() {
+                self.error = Some("A sound file goes with a video: open the video first.".into());
             }
             return;
         }
         self.subtitles_to_add = subtitles;
+        self.sounds_to_add = sounds;
         let others = others.into_iter().map(PathBuf::from).collect();
         if let Some(file) = self.queue.open(others) {
             self.play(&file.to_string_lossy());
@@ -295,6 +316,8 @@ impl Host {
             subtitle_language: self.prefs.subtitle_language.clone(),
             audio_track: recalled.audio_track,
             subtitles: recalled.subtitles,
+            sound_place: recalled.sound_place,
+            own_sound: recalled.own_sound,
         };
         let slot = self.new_swapchain.clone();
         let player =
@@ -305,6 +328,9 @@ impl Host {
         player.send(Command::Scale(self.scale));
         for file in self.subtitles_to_add.drain(..) {
             player.send(Command::AddSubtitles(file));
+        }
+        for file in self.sounds_to_add.drain(..) {
+            player.send(Command::AddSound(file));
         }
         self.clear_panel = false;
         self.session = Some(Session {

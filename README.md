@@ -33,6 +33,13 @@ Early. What works today, on the Mac:
   `film.ru.ass`, `film [Group].ass`), beside it or up to three folders below it (`Subs/`,
   `RUS Subs/[Group]/`), with the fonts from a `Fonts` folder near them; and any subtitle
   file dropped on a video that is playing
+- Sound files outside the video (a dubbing kept beside it: `film.mka`, `film.rus.ac3`,
+  `RUS Sound/[Studio]/film.mka`), found by the same rule and listed with the video's own
+  tracks; and any sound file dropped on a video that is playing. The file is read in step
+  with the picture and stays with it through seeking, as closely as the video's own sound
+  (`SOUND=beside scripts/sync-check.sh` measures it). One is put on unasked when the video has
+  no sound, or none in the preferred language while the file is in it. The dubbing chosen
+  for one episode is played with the next ones of its folder
 - Choosing the sound track and the subtitle track
 - Settings, each taking effect on the picture as it is changed: the display's peak brightness
   (its own figure, or yours), rendering quality, hardware decoding; subtitle size, subtitle
@@ -84,7 +91,7 @@ the signal panel offers the choice, and it is remembered.
 - `crates/audio`: sound output and the playback clock.
 - `crates/player`: the window and the playback threads. A library as well as a program, so
   that the Windows application can carry the same player. `queue.rs` is what plays after what
-  (folders, playlists), `sidecars.rs` finds the subtitle files that belong to a video.
+  (folders, playlists), `sidecars.rs` finds the subtitle and sound files that belong to a video.
 - `crates/player/macos`: the interface, in SwiftUI. It is compiled into the player and talks to
   it through four C functions (`src/ui.rs`): state goes in as JSON, commands come back as text.
 - `crates/winhost`: the player as `bitspring_video_core.dll` for the Windows application. It
