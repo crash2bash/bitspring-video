@@ -440,7 +440,7 @@ mod tests {
         // A sound format in the name is not a language: the folder still says which it is.
         let named = touch(folder.join("RUS Sound/[AniDub]/[G] Show - 03 [1080p].dts.mka"));
         let found = find_sound(next.to_str().unwrap());
-        assert_eq!(found[0].path, named.to_string_lossy());
+        assert_eq!(Path::new(&found[0].path), named);
         assert_eq!(found[0].language, "rus");
         std::fs::remove_file(named).unwrap();
         // Subtitle files are not sound files, and the other way round.
