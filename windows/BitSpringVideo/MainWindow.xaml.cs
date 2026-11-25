@@ -137,7 +137,13 @@ public sealed partial class MainWindow : Window
         queueFlyout.Opened += (_, _) => queueOpen = true;
         queueFlyout.Closed += (_, _) => queueOpen = false;
         signalFlyout.Opening += (_, _) => signalFlyout.Content = SignalPanel(state);
-        settingsFlyout.Opening += (_, _) => settingsFlyout.Content = SettingsPanel(state);
+        settingsFlyout.Opening += (_, _) =>
+        {
+            // Outputs come and go (headphones, a receiver switched on): looked at each time.
+            player.Send("sound-devices");
+            state = player.State();
+            settingsFlyout.Content = SettingsPanel(state);
+        };
         var subtitlesMenu = new MenuFlyout();
         subtitlesMenu.Opening += (_, _) => FillSubtitlesMenu(subtitlesMenu);
         SubtitlesButton.Flyout = subtitlesMenu;

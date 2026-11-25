@@ -63,6 +63,8 @@ struct Shared {
     speed: AtomicU64,
     /// Times the device asked for sound that had not arrived yet.
     underruns: AtomicU64,
+    /// The device went away (unplugged, switched off): nothing more will be heard through it.
+    lost: AtomicBool,
 
     // The anchor, guarded by a sequence counter: odd while the callback is writing.
     sequence: AtomicU64,
@@ -151,6 +153,41 @@ pub struct Format {
     pub channels: u16,
 }
 
+/// A sound output the system offers.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Device {
+    /// Stays the same between runs and across plugging in again: what a choice is kept as.
+    pub id: String,
+    pub name: String,
+}
+
+fn name_of(device: &cpal::Device) -> String {
+    device
+        .description()
+        .map(|d| d.name().to_string())
+        .unwrap_or_else(|_| "output".into())
+}
+
+/// The outputs there are now, in the system's order, and the name of the one the system
+/// itself sends sound to.
+pub fn devices() -> (Vec<Device>, Option<String>) {
+    let host = cpal::default_host();
+    let all = host
+        .output_devices()
+        .map(|list| {
+            list.filter_map(|d| {
+                Some(Device {
+                    id: d.id().ok()?.to_string(),
+                    name: name_of(&d),
+                })
+            })
+            .collect()
+        })
+        .unwrap_or_default();
+    let system = host.default_output_device().map(|d| name_of(&d));
+    (all, system)
+}
+
 pub struct AudioOutput {
     // Dropped first, which stops the callback.
     _stream: cpal::Stream,
@@ -160,18 +197,29 @@ pub struct AudioOutput {
 }
 
 impl AudioOutput {
-    /// Open the default output device, at `preferred_rate` when it offers that rate.
+    /// Open the output `chosen` names by its [`Device::id`], or the one the system sends sound
+    /// to when it is `None` or not connected now; at `preferred_rate` when it offers that rate.
     ///
-    /// Asking for the track's own rate lets the device run at it, so nothing is resampled.
-    pub fn open(preferred_rate: u32) -> Result<AudioOutput, Error> {
+    /// Asking for the track's own rate lets the device run at it, so nothing is resampled. The
+    /// system's own output is followed when the system moves to another one; a chosen one is
+    /// not, and reports [`lost`](Self::lost) when it goes away.
+    pub fn open(preferred_rate: u32, chosen: Option<&str>) -> Result<AudioOutput, Error> {
         let err = |e: cpal::Error| Error(e.to_string());
-        let device = cpal::default_host()
-            .default_output_device()
-            .ok_or(Error("no sound output device".into()))?;
-        let name = device
-            .description()
-            .map(|d| d.name().to_string())
-            .unwrap_or_else(|_| "output".into());
+        let host = cpal::default_host();
+        let picked = chosen.and_then(|id| {
+            let found = id.parse().ok().and_then(|id| host.device_by_id(&id));
+            if found.is_none() {
+                eprintln!("[warn] the chosen sound output is not connected: the system's plays");
+            }
+            found
+        });
+        let device = match picked {
+            Some(device) => device,
+            None => host
+                .default_output_device()
+                .ok_or(Error("no sound output device".into()))?,
+        };
+        let name = name_of(&device);
         let default = device.default_output_config().map_err(err)?;
 
         // Same channel count as the device's default; the track's rate if one of its modes has it.
@@ -201,6 +249,7 @@ impl AudioOutput {
             has_base: AtomicBool::new(false),
             speed: AtomicU64::new(1.0f64.to_bits()),
             underruns: AtomicU64::new(0),
+            lost: AtomicBool::new(false),
             sequence: AtomicU64::new(0),
             before: AtomicU64::new(0),
             total: AtomicU64::new(0),
@@ -261,13 +310,19 @@ impl AudioOutput {
             consumed += advanced;
         };
 
+        let watch = shared.clone();
+        let on_error = move |e: cpal::Error| {
+            use cpal::ErrorKind;
+            if matches!(
+                e.kind(),
+                ErrorKind::DeviceNotAvailable | ErrorKind::StreamInvalidated
+            ) {
+                watch.lost.store(true, Ordering::Release);
+            }
+            eprintln!("[warn] sound output: {e}");
+        };
         let stream = device
-            .build_output_stream(
-                config,
-                callback,
-                |e| eprintln!("[warn] sound output: {e}"),
-                None,
-            )
+            .build_output_stream(config, callback, on_error, None)
             .map_err(err)?;
         stream.play().map_err(err)?;
 
@@ -286,6 +341,11 @@ impl AudioOutput {
 
     pub fn format(&self) -> &Format {
         &self.format
+    }
+
+    /// The device has gone away: sound has to be opened again elsewhere.
+    pub fn lost(&self) -> bool {
+        self.shared.lost.load(Ordering::Acquire)
     }
 
     pub fn clock(&self) -> Clock {
@@ -346,6 +406,13 @@ impl AudioOutput {
     /// No more samples will come for this track.
     pub fn set_ended(&mut self) {
         self.shared.ended.store(true, Ordering::Release);
+    }
+}
+
+impl Drop for AudioOutput {
+    /// A clock left over from this output tells no time once it is gone.
+    fn drop(&mut self) {
+        self.shared.has_base.store(false, Ordering::Release);
     }
 }
 

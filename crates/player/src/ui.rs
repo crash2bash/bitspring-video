@@ -87,6 +87,8 @@ pub enum Request {
     SaveFrame,
     /// Place the picture in the window another way.
     Picture(PictureChange),
+    /// Look again at which sound outputs there are: the settings were opened.
+    SoundDevices,
     /// Play the file at this place in the list.
     Play(usize),
     /// Take the file at this place out of the list.
@@ -158,6 +160,7 @@ pub fn parse(text: &str) -> Option<Request> {
         "subtitle-delay-by" => Request::SubtitleDelayBy(number()?),
         "thumbnail" => Request::Thumbnail(number()?),
         "save-frame" => Request::SaveFrame,
+        "sound-devices" => Request::SoundDevices,
         "step" => Request::Player(Command::Step(number()? as i32)),
         "picture-shape" => Request::Picture(PictureChange::Shape(number().filter(|a| *a > 0.0))),
         "picture-cut" => Request::Picture(PictureChange::Cut(number().filter(|a| *a > 0.0))),
@@ -325,6 +328,19 @@ struct SettingsState {
     audio_delay: f32,
     auto_next: bool,
     night_mode: bool,
+    /// The output chosen, by its id; empty for the system's own.
+    sound_device: String,
+    /// Its name; shown with "not connected" when it is not among `sound_devices`.
+    sound_device_name: String,
+    sound_devices: Vec<DeviceState>,
+    /// What the system sends sound to now.
+    system_device: Option<String>,
+}
+
+#[derive(Serialize)]
+struct DeviceState {
+    id: String,
+    name: String,
 }
 
 #[derive(Serialize)]
@@ -500,6 +516,8 @@ pub struct View<'a> {
     pub queue: Option<&'a QueueState>,
     /// Files played lately; shown when nothing is open.
     pub recent: &'a [crate::history::Recent],
+    /// The sound outputs there are, and the name of the one the system uses.
+    pub devices: &'a (Vec<bsv_audio::Device>, Option<String>),
 }
 
 impl State {
@@ -516,6 +534,7 @@ impl State {
             prefs,
             queue,
             recent,
+            devices,
         } = view;
         let settings = SettingsState {
             display_peak: prefs.display_peak,
@@ -540,6 +559,17 @@ impl State {
             audio_delay: prefs.audio_delay_ms,
             auto_next: prefs.auto_next,
             night_mode: prefs.night_mode,
+            sound_device: prefs.sound_device.clone(),
+            sound_device_name: prefs.sound_device_name.clone(),
+            sound_devices: devices
+                .0
+                .iter()
+                .map(|d| DeviceState {
+                    id: d.id.clone(),
+                    name: d.name.clone(),
+                })
+                .collect(),
+            system_device: devices.1.clone(),
         };
         let display_state = DisplayState {
             name: display.name.clone(),
@@ -748,7 +778,10 @@ mod tests {
         assert!(matches!(parse("queue-play 2"), Some(Request::Play(2))));
         assert!(parse("queue-play two").is_none());
         assert!(matches!(parse("next"), Some(Request::Next)));
-        assert!(matches!(parse("chapter-previous"), Some(Request::Chapter(-1))));
+        assert!(matches!(
+            parse("chapter-previous"),
+            Some(Request::Chapter(-1))
+        ));
         assert!(matches!(parse("skip-next"), Some(Request::Skip(1))));
         assert!(matches!(parse("speed-by -0.25"), Some(Request::SpeedBy(d)) if d == -0.25));
         assert!(matches!(

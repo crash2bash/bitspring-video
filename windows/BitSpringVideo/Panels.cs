@@ -431,15 +431,22 @@ public sealed partial class MainWindow
 
         var night = new ToggleSwitch { IsOn = settings.NightMode, OnContent = "", OffContent = "", MinWidth = 0 };
         night.Toggled += (_, _) => Set("nightMode", night.IsOn ? "1" : "0");
-        panel.Children.Add(Group(
-            L("Sound", "Звук"),
-            Row(L("Night sound", "Ночной звук"), night),
-            Text(L("Quiet speech raised and loud passages brought down, for late evenings and thin walls.",
-                    "Тихая речь громче, громкие сцены тише: для позднего вечера и тонких стен."), 11, quiet: true),
-            SliderRow(L("Picture delay", "Задержка картинки"), settings.AudioDelay, -200, 500, 10,
-                value => $"{Math.Round(value)} {L("ms", "мс")}", value => Set("audioDelay", Number(Math.Round(value)))),
-            Text(L("For a TV or receiver that delays sound.", "Для телевизора или ресивера, который задерживает звук."),
-                11, quiet: true)));
+        var sound = new List<UIElement> { Row(L("Output", "Вывод"), OutputBox(settings, id => Set("soundDevice", id))) };
+        if (settings.SoundDeviceMissing)
+        {
+            sound.Add(Text(L(
+                    $"{settings.SoundDeviceName} is not connected: sound plays through {settings.SystemDevice ?? "the system's output"}.",
+                    $"Устройство «{settings.SoundDeviceName}» не подключено: звук идёт через {settings.SystemDevice ?? "системный вывод"}."),
+                11, quiet: true));
+        }
+        sound.Add(Row(L("Night sound", "Ночной звук"), night));
+        sound.Add(Text(L("Quiet speech raised and loud passages brought down, for late evenings and thin walls.",
+                "Тихая речь громче, громкие сцены тише: для позднего вечера и тонких стен."), 11, quiet: true));
+        sound.Add(SliderRow(L("Picture delay", "Задержка картинки"), settings.AudioDelay, -200, 500, 10,
+            value => $"{Math.Round(value)} {L("ms", "мс")}", value => Set("audioDelay", Number(Math.Round(value)))));
+        sound.Add(Text(L("For a TV or receiver that delays sound.", "Для телевизора или ресивера, который задерживает звук."),
+            11, quiet: true));
+        panel.Children.Add(Group(L("Sound", "Звук"), sound.ToArray()));
 
         // Rules for files yet to be opened, kept apart from what acts on the one playing:
         // beside the size and the delay they read as a choice for the film on screen.
@@ -493,6 +500,30 @@ public sealed partial class MainWindow
             "A frame can be made between every two: 25 pictures a second become 50. For videos at up to 30 a second.",
             "Между каждыми двумя кадрами можно добавлять промежуточный: 25 кадров в секунду становятся 50. Для видео до 30 кадр/с."),
     };
+
+    /// <summary>
+    /// The sound outputs: the system's own first, named, then each one there is; a chosen one
+    /// that is not connected stays in the list so that the choice reads as kept.
+    /// </summary>
+    private static ComboBox OutputBox(SettingsInfo settings, Action<string> chosen)
+    {
+        var system = L("As the system", "Как в системе");
+        var outputs = new List<(string Id, string Name)>
+        {
+            ("", settings.SystemDevice is string name ? $"{system} ({name})" : system),
+        };
+        outputs.AddRange(settings.SoundDevices.Select(d => (d.Id, d.Name)));
+        if (settings.SoundDeviceMissing) outputs.Add((settings.SoundDevice, settings.SoundDeviceName));
+
+        var box = new ComboBox { MinWidth = 150, MaxWidth = 220 };
+        foreach (var output in outputs) box.Items.Add(output.Name);
+        box.SelectedIndex = Math.Max(0, outputs.FindIndex(o => o.Id == settings.SoundDevice));
+        box.SelectionChanged += (_, _) =>
+        {
+            if (box.SelectedIndex >= 0) chosen(outputs[box.SelectedIndex].Id);
+        };
+        return box;
+    }
 
     /// <summary>A list of languages, with one more choice at the top for "no preference".</summary>
     private static ComboBox LanguageBox(string none, string selected, Action<string> chosen)

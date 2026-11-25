@@ -362,6 +362,22 @@ internal sealed class SettingsInfo
     public bool AutoNext = true;
     /// <summary>Loud passages brought down towards the speech, for listening late or quietly.</summary>
     public bool NightMode;
+    /// <summary>The sound output chosen, by its id; empty for the system's own. Its name is kept for while it is not connected.</summary>
+    public string SoundDevice = "";
+    public string SoundDeviceName = "";
+    public List<OutputDevice> SoundDevices = new();
+    /// <summary>What the system sends sound to now.</summary>
+    public string? SystemDevice;
+
+    /// <summary>The chosen output is not among those connected.</summary>
+    public bool SoundDeviceMissing => SoundDevice.Length > 0 && !SoundDevices.Any(d => d.Id == SoundDevice);
+}
+
+/// <summary>A sound output the system offers.</summary>
+internal sealed class OutputDevice
+{
+    public string Id = "";
+    public string Name = "";
 }
 
 internal sealed class QueueItem

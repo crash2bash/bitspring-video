@@ -19,8 +19,10 @@ Early. What works today, on the Mac:
 - SDR left as SDR, never stretched
 - Display detection: HDR on/off, peak and black level, gamut; rechecked every second while playing
 - Sound: every codec FFmpeg decodes (AAC, AC-3, E-AC-3, DTS, TrueHD, FLAC, Opus ...), on the
-  default output device, at the track's own sample rate when the device offers it; more channels
-  than the device has are mixed down
+  output the system uses or one chosen in the settings, at the track's own sample rate when the
+  device offers it; more channels than the device has are mixed down. A chosen output is kept
+  between runs; while it is unplugged or switched off the system's plays, and the settings say so.
+  Changing it while a film plays moves the sound over with a pause of about half a second
 - The picture follows the sound device's clock, so sound is never stretched or dropped to keep
   sync, and is drawn for the moment it will be seen rather than the moment it is drawn. Measured
   on the Mac (`scripts/sync-check.sh`): a flash within a display refresh or two of its beep
@@ -122,8 +124,7 @@ decoding and sound on Windows have not yet been judged on a real machine. It has
 each time it starts it tells Windows, for the person using it only, which files it opens and
 where it is now.
 
-Not there yet: playing from the network, choosing the output device, bitstream passthrough to a
-receiver.
+Not there yet: playing from the network, bitstream passthrough to a receiver.
 
 Dolby Vision: the RPU is applied by libplacebo (profiles 5 and 8; profile 7 plays its base layer
 with the RPU, the enhancement layer is not decoded). The output is HDR10 mapped to the display.
@@ -219,6 +220,7 @@ bitspring-video <file>              play; the other videos of its folder follow
 bitspring-video <folder>            play the folder's videos, one after another
 bitspring-video <a> <b> <list.m3u8> play these in this order
 bitspring-video --displays          what each connected display can do
+bitspring-video --sound-outputs     the sound outputs there are, and the ids the settings keep
 bitspring-video --info <file>       what the file is and how it would be shown
 bitspring-video --hdr passthrough <file>
 bitspring-video --audio-delay 80 <file>     the TV or receiver delays sound by 80 ms

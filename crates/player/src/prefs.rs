@@ -42,6 +42,11 @@ pub struct Preferences {
     pub auto_next: bool,
     /// Loud passages brought down towards the speech, for listening late or quietly.
     pub night_mode: bool,
+    /// The sound output to play through, by the id the system gives it; empty for the one
+    /// the system itself uses (and follows when that changes).
+    pub sound_device: String,
+    /// Its name when it was chosen, to show while it is not connected.
+    pub sound_device_name: String,
 }
 
 impl Default for Preferences {
@@ -62,6 +67,8 @@ impl Default for Preferences {
             volume: 1.0,
             auto_next: true,
             night_mode: false,
+            sound_device: String::new(),
+            sound_device_name: String::new(),
         }
     }
 }
@@ -135,6 +142,9 @@ impl Preferences {
         self.subtitle_nits = within(self.subtitle_nits, SUBTITLE_NITS, 203.0);
         self.audio_delay_ms = within(self.audio_delay_ms, AUDIO_DELAY_MS, 0.0);
         self.volume = within(self.volume, (0.0, 1.0), 1.0);
+        if self.sound_device.is_empty() {
+            self.sound_device_name.clear();
+        }
     }
 
     /// Change one preference by its name in the file. Returns whether anything changed.
@@ -157,10 +167,23 @@ impl Preferences {
             "volume" => self.volume = number.unwrap_or(1.0),
             "autoNext" => self.auto_next = matches!(value.trim(), "1" | "true"),
             "nightMode" => self.night_mode = matches!(value.trim(), "1" | "true"),
+            "soundDevice" => self.sound_device = value.trim().to_string(),
             _ => return false,
         }
         self.tidy();
         *self != before
+    }
+
+    /// Keep the chosen output's name, as it is called among `devices`, for when it is gone.
+    pub fn name_device(&mut self, devices: &[bsv_audio::Device]) {
+        if let Some(device) = devices.iter().find(|d| d.id == self.sound_device) {
+            self.sound_device_name = device.name.clone();
+        }
+    }
+
+    /// The output chosen to play through; `None` for the system's.
+    pub fn sound_output(&self) -> Option<String> {
+        Some(self.sound_device.clone()).filter(|id| !id.is_empty())
     }
 
     pub fn mode(&self) -> HdrMode {
@@ -261,6 +284,24 @@ mod tests {
         p.set("hdrMode", "");
         assert_eq!(p.hdr_mode, "auto");
         assert!(!p.set("noSuchThing", "1"));
+    }
+
+    #[test]
+    fn a_chosen_output_keeps_its_name_until_the_system_is_chosen_again() {
+        let mut p = Preferences::default();
+        assert_eq!(p.sound_output(), None);
+        let devices = [bsv_audio::Device {
+            id: "coreaudio:DAC-1".into(),
+            name: "The DAC".into(),
+        }];
+        assert!(p.set("soundDevice", "coreaudio:DAC-1"));
+        p.name_device(&devices);
+        assert_eq!(p.sound_output().as_deref(), Some("coreaudio:DAC-1"));
+        // Unplugged: the name stays for the settings to say what is missing.
+        p.name_device(&[]);
+        assert_eq!(p.sound_device_name, "The DAC");
+        assert!(p.set("soundDevice", ""));
+        assert_eq!((p.sound_output(), p.sound_device_name.as_str()), (None, ""));
     }
 
     #[test]

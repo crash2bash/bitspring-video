@@ -138,11 +138,30 @@ struct SettingsInfo: Codable, Equatable {
     var autoNext: Bool
     /// Loud passages brought down towards the speech, for listening late or quietly.
     var nightMode: Bool
+    /// The sound output chosen, by its id; empty for the system's own. Its name is kept for
+    /// while it is not connected.
+    var soundDevice: String
+    var soundDeviceName: String
+    var soundDevices: [OutputDevice]
+    /// What the system sends sound to now.
+    var systemDevice: String?
+
+    /// The chosen output is not among those connected.
+    var soundDeviceMissing: Bool {
+        !soundDevice.isEmpty && !soundDevices.contains { $0.id == soundDevice }
+    }
 
     static let standard = SettingsInfo(
         displayPeak: nil, reportedPeak: 0, quality: "high", upscaling: "off", interpolation: "off", interpolations: [], hardwareDecoding: true, dolbyVision: true,
         subtitleScale: 1,
-        subtitleNits: 203, subtitleLanguage: "", audioLanguage: "", audioDelay: 0, autoNext: true, nightMode: false)
+        subtitleNits: 203, subtitleLanguage: "", audioLanguage: "", audioDelay: 0, autoNext: true, nightMode: false,
+        soundDevice: "", soundDeviceName: "", soundDevices: [], systemDevice: nil)
+}
+
+/// A sound output the system offers.
+struct OutputDevice: Codable, Equatable {
+    var id: String
+    var name: String
 }
 
 /// One file of the queue.

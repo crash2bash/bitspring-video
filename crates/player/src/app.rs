@@ -98,6 +98,9 @@ struct Running {
     /// Files played lately, read from the history when nothing is open; forgotten when a
     /// file opens, as that changes them.
     recent: Option<Vec<crate::history::Recent>>,
+    /// The sound outputs there are and the system's own, looked at again when the settings
+    /// are opened.
+    devices: Option<(Vec<crate::SoundDevice>, Option<String>)>,
 }
 
 /// How many files played lately the empty window lists.
@@ -324,6 +327,7 @@ impl Running {
             subtitle_delay: recalled.subtitle_delay,
             picture: self.picture,
             night: self.prefs.night_mode,
+            sound_device: self.prefs.sound_output(),
             volume: self.volume,
             muted: self.muted,
             subtitle_lift: self.subtitle_lift(),
@@ -487,6 +491,11 @@ impl Running {
         if !self.prefs.set(key, value) {
             return;
         }
+        if key == "soundDevice" {
+            let devices = &self.devices.get_or_insert_with(crate::sound_devices).0;
+            self.saved.name_device(devices);
+            self.prefs.name_device(devices);
+        }
         self.save_preferences();
         match key {
             "displayPeak" => self.send(Command::Display(Box::new(self.shown_display()))),
@@ -501,6 +510,7 @@ impl Running {
             "hardwareDecoding" => self.hardware = self.prefs.hardware_decoding,
             "dolbyVision" => self.send(Command::SetDolbyVision(self.prefs.dolby_vision)),
             "nightMode" => self.send(Command::SetNight(self.prefs.night_mode)),
+            "soundDevice" => self.send(Command::SetSoundDevice(self.prefs.sound_output())),
             "subtitleScale" | "subtitleNits" => self.send(Command::SubtitleLook {
                 scale: self.prefs.subtitle_scale,
                 nits: self.prefs.subtitle_nits,
@@ -540,10 +550,13 @@ impl Running {
                     session.player.thumbnail(at);
                 }
             }
+            Request::SoundDevices => self.devices = None,
             Request::SaveFrame => {
                 if let Some(session) = &self.session {
                     let at = session.player.status().position;
-                    session.player.save_frame(prefs::frame_file(&session.file_name, at));
+                    session
+                        .player
+                        .save_frame(prefs::frame_file(&session.file_name, at));
                 }
             }
             Request::Picture(change) => {
@@ -555,11 +568,16 @@ impl Running {
                 self.send(Command::SetPicture(self.picture));
             }
             Request::SpeedBy(step) => {
-                let speed = steps::speed(self.speed, step, playback::MIN_SPEED, playback::MAX_SPEED);
+                let speed =
+                    steps::speed(self.speed, step, playback::MIN_SPEED, playback::MAX_SPEED);
                 self.send(Command::SetSpeed(speed));
             }
             Request::SubtitleDelayBy(step) => {
-                if let Some(now) = self.session.as_ref().map(|s| s.player.status().subtitle_delay) {
+                if let Some(now) = self
+                    .session
+                    .as_ref()
+                    .map(|s| s.player.status().subtitle_delay)
+                {
                     let delay = steps::subtitle_delay(now, step, playback::MAX_SUBTITLE_DELAY);
                     self.send(Command::SetSubtitleDelay(delay));
                 }
@@ -647,7 +665,11 @@ impl Running {
                     session.printed_chapters = true;
                     let first = status.chapters.iter().take(3).map(report::chapter);
                     let more = status.chapters.len().saturating_sub(3);
-                    let more = if more > 0 { format!(", and {more} more") } else { String::new() };
+                    let more = if more > 0 {
+                        format!(", and {more} more")
+                    } else {
+                        String::new()
+                    };
                     println!(
                         "Chapters: {} ({}{more})",
                         status.chapters.len(),
@@ -741,6 +763,7 @@ impl Running {
                 prefs: &self.prefs,
                 queue: queue.as_ref(),
                 recent: &[],
+                devices: self.devices.get_or_insert_with(crate::sound_devices),
             });
             self.interface.show(&state);
 
@@ -784,7 +807,10 @@ impl Running {
                 mode: self.mode,
                 prefs: &self.prefs,
                 queue: None,
-                recent: self.recent.get_or_insert_with(|| self.memory.recent(RECENT_SHOWN)),
+                recent: self
+                    .recent
+                    .get_or_insert_with(|| self.memory.recent(RECENT_SHOWN)),
+                devices: self.devices.get_or_insert_with(crate::sound_devices),
             });
             self.interface.show(&state);
         }
@@ -862,6 +888,7 @@ impl App {
             speed: 1.0,
             picture: Picture::default(),
             recent: None,
+            devices: None,
             saved,
             prefs,
             preferences_path: self.settings.preferences.clone(),
@@ -915,7 +942,9 @@ impl App {
                 "hdr" => r.send(Command::CycleHdrMode),
                 "fullscreen" => r.toggle_fullscreen(),
                 "quit" => event_loop.exit(),
-                "panel" | "pin" | "settings" | "mini" | "on-top" => r.interface.perform(&step.action),
+                "panel" | "pin" | "settings" | "mini" | "on-top" => {
+                    r.interface.perform(&step.action)
+                }
                 a if a.starts_with("set ") => {
                     let (key, value) = a[4..].trim().split_once(' ').unwrap_or((a[4..].trim(), ""));
                     r.set_preference(key, value);
@@ -1094,7 +1123,9 @@ impl ApplicationHandler for App {
                     }
                     Key::Named(NamedKey::PageDown) => Some(Request::Chapter(1)),
                     Key::Named(NamedKey::PageUp) => Some(Request::Chapter(-1)),
-                    Key::Named(NamedKey::MediaPlayPause) => Some(Request::Player(Command::TogglePause)),
+                    Key::Named(NamedKey::MediaPlayPause) => {
+                        Some(Request::Player(Command::TogglePause))
+                    }
                     Key::Named(NamedKey::MediaTrackNext) => Some(Request::Skip(1)),
                     Key::Named(NamedKey::MediaTrackPrevious) => Some(Request::Skip(-1)),
                     Key::Named(NamedKey::Enter) if !event.repeat => Some(Request::ToggleFullscreen),

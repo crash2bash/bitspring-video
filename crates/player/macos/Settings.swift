@@ -49,6 +49,15 @@ private struct SettingsPanel: View {
                 .scrollIndicators(.never)
         }
         .frame(width: 372)
+        // Outputs come and go (headphones, a receiver switched on): looked at each time.
+        .onAppear { model.send("sound-devices") }
+    }
+
+    /// The first choice of the output menu: whatever the system uses, named.
+    private var systemChoice: String {
+        let base = L("As the system", "Как в системе")
+        guard let name = settings.systemDevice else { return base }
+        return "\(base) (\(name))"
     }
 
     private var content: some View {
@@ -140,6 +149,25 @@ private struct SettingsPanel: View {
             }
 
             group(L("Sound", "Звук")) {
+                row(L("Output", "Вывод")) {
+                    PickMenu(
+                        options: [("", systemChoice)] + settings.soundDevices.map { ($0.id, $0.name) }
+                            + (settings.soundDeviceMissing
+                                ? [(settings.soundDevice, settings.soundDeviceName)] : []),
+                        selected: settings.soundDevice,
+                        title: settings.soundDevice.isEmpty
+                            ? L("As the system", "Как в системе")
+                            : settings.soundDeviceName,
+                        onSelect: { model.set("soundDevice", $0) })
+                }
+                if settings.soundDeviceMissing {
+                    Text(L(
+                        "\(settings.soundDeviceName) is not connected: sound plays through \(settings.systemDevice ?? "the system's output").",
+                        "Устройство «\(settings.soundDeviceName)» не подключено: звук идёт через \(settings.systemDevice ?? "системный вывод")."))
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.quiet)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 row(L("Night sound", "Ночной звук")) {
                     Toggle("", isOn: Binding(
                         get: { settings.nightMode },
@@ -331,6 +359,57 @@ private struct SettingsPanel: View {
     }
 }
 
+/// A menu in a capsule, for choices too many or too long for buttons side by side.
+private struct PickMenu: View {
+    /// Tag and title of each choice, in order.
+    let options: [(String, String)]
+    let selected: String
+    /// What the capsule says.
+    let title: String
+    let onSelect: (String) -> Void
+
+    var body: some View {
+        Menu {
+            Picker(title, selection: Binding(get: { selected }, set: onSelect)) {
+                ForEach(options, id: \.0) { option in
+                    Text(option.1).tag(option.0)
+                }
+            }
+            .pickerStyle(.inline)
+            .labelsHidden()
+        } label: {
+            MenuCapsule(text: title)
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+    }
+}
+
+/// How a menu looks before it is opened: its choice, and the sign that it opens.
+private struct MenuCapsule: View {
+    let text: String
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(text)
+                .font(.system(size: 12))
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: 200)
+                .fixedSize(horizontal: true, vertical: false)
+            Image(systemName: "chevron.up.chevron.down")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(Color.quiet)
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 26)
+        .background(Capsule().fill(Color.black.opacity(0.22)))
+        .contentShape(Capsule())
+    }
+}
+
 /// A menu of languages, with one more choice at the top for "no preference".
 private struct LanguageMenu: View {
     let none: String
@@ -360,17 +439,7 @@ private struct LanguageMenu: View {
             .pickerStyle(.inline)
             .labelsHidden()
         } label: {
-            HStack(spacing: 6) {
-                Text(selected.isEmpty ? none : (languageName(selected) ?? selected))
-                    .font(.system(size: 12))
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(Color.quiet)
-            }
-            .padding(.horizontal, 10)
-            .frame(height: 26)
-            .background(Capsule().fill(Color.black.opacity(0.22)))
-            .contentShape(Capsule())
+            MenuCapsule(text: selected.isEmpty ? none : (languageName(selected) ?? selected))
         }
         .menuStyle(.button)
         .buttonStyle(.plain)

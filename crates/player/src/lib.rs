@@ -20,5 +20,6 @@ pub mod sidecars;
 pub mod steps;
 #[cfg(any(target_os = "macos", windows))]
 pub mod surface;
+pub use bsv_audio::{Device as SoundDevice, devices as sound_devices};
 #[cfg(any(target_os = "macos", windows))]
 pub mod ui;

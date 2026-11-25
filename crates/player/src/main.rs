@@ -2,6 +2,7 @@
 //!
 //!     bitspring-video <file>             play
 //!     bitspring-video --displays         what each connected display can do
+//!     bitspring-video --sound-outputs    the sound outputs there are, and their ids
 //!     bitspring-video --info <file>      what the file is and how it would be shown
 
 use std::process::ExitCode;
@@ -19,6 +20,7 @@ BitSpring Video
 Usage:
   bitspring-video [options] [file | folder | playlist] ...
   bitspring-video --displays
+  bitspring-video --sound-outputs
   bitspring-video --info <file>
 
 Options:
@@ -59,6 +61,7 @@ Keys:
 struct Args {
     paths: Vec<String>,
     displays: bool,
+    outputs: bool,
     info: bool,
     hardware: Option<bool>,
     mode: Option<HdrMode>,
@@ -76,6 +79,7 @@ fn parse_args() -> Result<Args, String> {
     let mut args = Args {
         paths: Vec::new(),
         displays: false,
+        outputs: false,
         info: false,
         hardware: None,
         mode: None,
@@ -93,6 +97,7 @@ fn parse_args() -> Result<Args, String> {
         let mut value = |name: &str| it.next().ok_or(format!("{name} needs a value"));
         match arg.as_str() {
             "--displays" => args.displays = true,
+            "--sound-outputs" => args.outputs = true,
             "--info" => args.info = true,
             "--software" => args.hardware = Some(false),
             "--settings" => args.settings = Some(value("--settings")?),
@@ -137,6 +142,22 @@ fn parse_args() -> Result<Args, String> {
         }
     }
     Ok(args)
+}
+
+/// The id is what `soundDevice` in the settings file holds.
+fn print_outputs() {
+    let (all, system) = bitspring_video::sound_devices();
+    if all.is_empty() {
+        println!("No sound outputs.");
+    }
+    for device in &all {
+        let mark = if system.as_ref() == Some(&device.name) {
+            "  (the system's)"
+        } else {
+            ""
+        };
+        println!("{}{mark}\n  {}", device.name, device.id);
+    }
 }
 
 fn print_displays() -> Result<(), String> {
@@ -207,6 +228,10 @@ fn run() -> Result<(), String> {
 
     if args.displays {
         return print_displays();
+    }
+    if args.outputs {
+        print_outputs();
+        return Ok(());
     }
     if args.info {
         let Some(path) = args.paths.first().cloned() else {

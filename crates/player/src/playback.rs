@@ -29,9 +29,9 @@ use bsv_display::policy::{HdrMode, Output, plan};
 use crate::language;
 use crate::sidecars::{self, Sidecar};
 use bsv_engine::{
-    AudioDecoder, AudioInfo, Between, Chapter, Decoded, Frame, Gpu, Interpolation, Interpolator, MediaInfo,
-    Packet, Pull, Quality, Read, RenderStats, RenderStatus, Source, SubtitleDecoder, SubtitleEvent,
-    Still, SubtitleKind, Tempo, Track, TrackKind, Upscaler, VideoDecoder,
+    AudioDecoder, AudioInfo, Between, Chapter, Decoded, Frame, Gpu, Interpolation, Interpolator,
+    MediaInfo, Packet, Pull, Quality, Read, RenderStats, RenderStatus, Source, Still,
+    SubtitleDecoder, SubtitleEvent, SubtitleKind, Tempo, Track, TrackKind, Upscaler, VideoDecoder,
 };
 
 /// Decoded frames waiting for the renderer. A 4K 10-bit frame is about 25 MB.
@@ -90,6 +90,8 @@ pub struct Options {
     pub picture: Picture,
     /// Loud passages brought down towards the speech.
     pub night: bool,
+    /// The sound output to play through, by its id; `None` for the one the system uses.
+    pub sound_device: Option<String>,
     /// 0.0 to 1.0.
     pub volume: f32,
     pub muted: bool,
@@ -158,6 +160,8 @@ pub enum Command {
     SetPicture(Picture),
     /// Bring loud passages down towards the speech, or not.
     SetNight(bool),
+    /// Play through this sound output from here on (by its id), or through the system's.
+    SetSoundDevice(Option<String>),
     /// Show the subtitles of this file, which may be anywhere: it was opened by hand.
     AddSubtitles(String),
     /// Play the sound of this file with the picture; it too was opened by hand.
@@ -306,7 +310,8 @@ fn stills_loop(
                 let made =
                     file.exists() || still.save(at, Some(THUMBNAIL_WIDTH), false, &file).is_ok();
                 if made {
-                    status.lock().unwrap().thumbnail = Some((at, file.to_string_lossy().into_owned()));
+                    status.lock().unwrap().thumbnail =
+                        Some((at, file.to_string_lossy().into_owned()));
                 }
             }
             StillJob::Save(at, file) => {
@@ -538,9 +543,9 @@ impl Timeline {
         }
         match &self.sound {
             // No reading yet means the sound for this position is still on its way.
-            Some((clock, _)) => clock
-                .position()
-                .map_or(self.floor, |p| (p - self.audio_delay * self.speed).max(self.floor)),
+            Some((clock, _)) => clock.position().map_or(self.floor, |p| {
+                (p - self.audio_delay * self.speed).max(self.floor)
+            }),
             None => self.system.position(),
         }
     }
@@ -730,6 +735,9 @@ enum ReaderCommand {
     Sidecars(Vec<String>),
     /// The same for sound files: one for each of their tracks.
     Sounds(Vec<OutsideSound>),
+    /// Play through this output (by its id; `None`: the system's). A seek follows, which
+    /// starts the sound again from where the picture is.
+    Device(Option<String>),
 }
 
 /// News from the reading thread that is not a packet.
@@ -750,6 +758,8 @@ enum FromReader {
     Playing(Option<i32>),
     /// A sound device was opened after playback began.
     Device(SoundSetup),
+    /// The chosen output went away while playing.
+    DeviceLost,
     /// A font that came with a subtitle file.
     Font { name: String, data: Vec<u8> },
 }
@@ -798,8 +808,8 @@ struct SoundPath {
 }
 
 impl SoundPath {
-    fn open(source: &Source, track: &AudioInfo) -> Result<SoundPath, String> {
-        let output = AudioOutput::open(track.sample_rate).map_err(|e| e.to_string())?;
+    fn open(source: &Source, track: &AudioInfo, device: Option<&str>) -> Result<SoundPath, String> {
+        let output = AudioOutput::open(track.sample_rate, device).map_err(|e| e.to_string())?;
         let format = output.format();
         let decoder = AudioDecoder::open(source, format.sample_rate, format.channels)
             .map_err(|e| e.to_string())?;
@@ -903,7 +913,8 @@ impl SoundPath {
                     self.based = true;
                 }
                 if !self.based {
-                    self.output.set_base(start.max(samples.pts) + lead, self.speed);
+                    self.output
+                        .set_base(start.max(samples.pts) + lead, self.speed);
                     self.based = true;
                 }
             }
@@ -1127,6 +1138,7 @@ impl Outside {
 fn take_sound(
     sound: &mut Option<SoundPath>,
     from: &Source,
+    device: Option<&str>,
     news: &Sender<FromReader>,
 ) -> Result<(), String> {
     let track = from.audio_info().ok_or("the file has no sound")?;
@@ -1137,7 +1149,7 @@ fn take_sound(
                 .map_err(|e| e.to_string())?;
         }
         None => {
-            let path = SoundPath::open(from, &track)?;
+            let path = SoundPath::open(from, &track, device)?;
             let _ = news.send(FromReader::Device(SoundSetup {
                 clock: path.output.clock(),
                 controls: path.output.controls(),
@@ -1298,6 +1310,8 @@ struct Reading {
     shared: Arc<Shared>,
     /// The video's path: subtitle files below its folder bring their fonts from there.
     path: String,
+    /// The output chosen to play through, by its id.
+    device: Option<String>,
 }
 
 fn read_loop(mut source: Source, reading: Reading) {
@@ -1309,6 +1323,7 @@ fn read_loop(mut source: Source, reading: Reading) {
         news,
         shared,
         path: video_path,
+        mut device,
     } = reading;
     // Subtitle files next to the video, in the order of their track numbers (they are found
     // a moment after playback starts), and the one of them being shown.
@@ -1322,7 +1337,7 @@ fn read_loop(mut source: Source, reading: Reading) {
     // The output device is opened here because its stream must stay on the thread that made it.
     let mut sound = None;
     if let Some(track) = source.audio_info().filter(|_| sound_wanted) {
-        match SoundPath::open(&source, &track) {
+        match SoundPath::open(&source, &track, device.as_deref()) {
             Ok(path) => {
                 let _ = setup.send(Some(SoundSetup {
                     clock: path.output.clock(),
@@ -1344,6 +1359,8 @@ fn read_loop(mut source: Source, reading: Reading) {
     let mut generation = 0u64;
     let mut start = 0.0f64;
     let mut idle = false; // at the end of the file, or after an error: wait for a seek
+    // The output's going away has been told: once for each device.
+    let mut lost_told = false;
     let mut subtitles = open_subtitles(&source, generation, &news);
 
     loop {
@@ -1352,6 +1369,10 @@ fn read_loop(mut source: Source, reading: Reading) {
         }
         // Sound held back while the device was full moves on with every packet read.
         tend(&mut sound, &mut outside, start, generation, &shared);
+        if !lost_told && sound.as_ref().is_some_and(|path| path.output.lost()) {
+            let _ = news.send(FromReader::DeviceLost);
+            lost_told = true;
+        }
         let command = if idle {
             // Nothing left to read of the video, but the end of the sound may still be
             // waiting, and a sound file goes on being read.
@@ -1376,6 +1397,38 @@ fn read_loop(mut source: Source, reading: Reading) {
             sounds = found;
             continue;
         }
+        if let Some(ReaderCommand::Device(wanted)) = command {
+            device = wanted;
+            // Opened beside the old one before that is let go: when the new one cannot be
+            // opened, the sound stays where it was.
+            if sound.is_some() {
+                let from = outside.as_ref().map_or(&source, |file| &file.source);
+                let opened = from
+                    .audio_info()
+                    .ok_or_else(|| "the track has gone".to_string())
+                    .and_then(|track| SoundPath::open(from, &track, device.as_deref()));
+                match opened {
+                    Ok(mut path) => {
+                        if let Some(old) = &sound {
+                            path.most_silence = old.most_silence;
+                        }
+                        let track = from.audio_info().expect("opened above");
+                        let _ = news.send(FromReader::Device(SoundSetup {
+                            clock: path.output.clock(),
+                            controls: path.output.controls(),
+                            sound: Sound {
+                                track,
+                                device: path.output.format().clone(),
+                            },
+                        }));
+                        sound = Some(path);
+                        lost_told = false;
+                    }
+                    Err(e) => eprintln!("[warn] the sound stays where it was: {e}"),
+                }
+            }
+            continue;
+        }
         if let Some(ReaderCommand::Seek {
             to,
             generation: g,
@@ -1394,7 +1447,7 @@ fn read_loop(mut source: Source, reading: Reading) {
                         .ok_or_else(|| "there is no such sound file".to_string())
                         .and_then(|file| Outside::open(file, index))
                         .and_then(|file| {
-                            take_sound(&mut sound, &file.source, &news)?;
+                            take_sound(&mut sound, &file.source, device.as_deref(), &news)?;
                             // The video's own sound is no longer read.
                             source.no_audio();
                             outside = Some(file);
@@ -1405,7 +1458,7 @@ fn read_loop(mut source: Source, reading: Reading) {
                     source
                         .select_audio(index)
                         .map_err(|e| e.to_string())
-                        .and_then(|()| take_sound(&mut sound, &source, &news))
+                        .and_then(|()| take_sound(&mut sound, &source, device.as_deref(), &news))
                         .map(|()| outside = None)
                         .inspect_err(|_| {
                             if outside.is_some() {
@@ -1941,6 +1994,7 @@ fn render_loop(
     let reader_thread = {
         let (packets, shared, sound) = (packets.clone(), shared.clone(), options.sound);
         let path = options.path.clone();
+        let device = options.sound_device.clone();
         thread::Builder::new()
             .name("read".into())
             .spawn(move || {
@@ -1954,6 +2008,7 @@ fn render_loop(
                         news: news_tx,
                         shared,
                         path,
+                        device,
                     },
                 )
             })
@@ -2055,8 +2110,16 @@ fn render_loop(
                         paused = true;
                         timeline.hold();
                     }
-                    let frame = if info.fps > 1.0 { 1.0 / info.fps } else { 1.0 / 24.0 };
-                    let limit = if duration > 0.0 { (duration - 0.5).max(0.0) } else { f64::MAX };
+                    let frame = if info.fps > 1.0 {
+                        1.0 / info.fps
+                    } else {
+                        1.0 / 24.0
+                    };
+                    let limit = if duration > 0.0 {
+                        (duration - 0.5).max(0.0)
+                    } else {
+                        f64::MAX
+                    };
                     if step > 0 {
                         // The next picture is already decoded: time moves on by one of them.
                         timeline.floor = (timeline.floor + frame * step as f64).min(limit);
@@ -2071,6 +2134,13 @@ fn render_loop(
                         night = wanted;
                         shared.night.store(night, Ordering::Relaxed);
                         // The sound is made again from here through the new filters.
+                        jump = Some((timeline.position(), None, None));
+                    }
+                }
+                Ok(Command::SetSoundDevice(wanted)) => {
+                    let _ = reader_commands.send(ReaderCommand::Device(wanted));
+                    // The sound starts again from here through the new output.
+                    if sound.is_some() {
                         jump = Some((timeline.position(), None, None));
                     }
                 }
@@ -2342,6 +2412,11 @@ fn render_loop(
                     timeline.adopt(setup.clock, setup.controls);
                     sound = Some(setup.sound);
                 }
+                // Unplugged or switched off: on through the system's own output.
+                FromReader::DeviceLost => {
+                    eprintln!("[warn] the sound output went away: playing through the system's");
+                    pending.push_back(Command::SetSoundDevice(None));
+                }
             }
         }
         if let Some((_, controls)) = &timeline.sound {
@@ -2542,6 +2617,7 @@ mod tests {
             subtitle_delay: 0.0,
             picture: Picture::default(),
             night: false,
+            sound_device: None,
             volume: 1.0,
             muted: false,
             subtitle_lift: 0.0,
