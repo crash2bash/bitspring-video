@@ -907,9 +907,9 @@ impl Drop for Still {
 
 // ---- Sound at another speed --------------------------------------------------------------
 
-/// Makes sound faster or slower without changing its pitch: interleaved samples in, the same
-/// kind out, `speed` times as fast. What comes out lags what goes in by a few tens of
-/// milliseconds; [`Tempo::finish`] has the rest come out at the end.
+/// Makes sound faster or slower without changing its pitch, and at night evens out its loud
+/// passages: interleaved samples in, the same kind out, `speed` times as fast. What comes out
+/// lags what goes in by a few tens of milliseconds; [`Tempo::finish`] has the rest come out.
 pub struct Tempo {
     ptr: NonNull<ffi::bsv_tempo>,
     channels: usize,
@@ -919,7 +919,7 @@ pub struct Tempo {
 unsafe impl Send for Tempo {}
 
 impl Tempo {
-    pub fn open(rate: u32, channels: u16, speed: f64) -> Result<Tempo, Error> {
+    pub fn open(rate: u32, channels: u16, speed: f64, night: bool) -> Result<Tempo, Error> {
         let mut error = [0 as c_char; 256];
         // SAFETY: the error buffer outlives the call.
         let ptr = unsafe {
@@ -927,6 +927,7 @@ impl Tempo {
                 rate as c_int,
                 channels as c_int,
                 speed,
+                night as c_int,
                 error.as_mut_ptr(),
                 error.len() as c_int,
             )

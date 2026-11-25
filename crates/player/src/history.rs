@@ -29,6 +29,9 @@ const WRITE_EVERY: Duration = Duration::from_secs(5);
 pub struct Remembered {
     /// The file's name when it was last played, for whoever reads the JSON.
     pub name: String,
+    /// Where it was when it was last played: to open it again from the list of recent files.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub path: String,
     /// Where it was stopped, in seconds; 0 once it has been watched to the end.
     pub position: f64,
     pub duration: f64,
@@ -110,6 +113,16 @@ fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
+}
+
+/// A file played lately, for the list of them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Recent {
+    pub name: String,
+    pub path: String,
+    /// Where it was stopped, 0 once watched to the end; and how long it is.
+    pub position: f64,
+    pub duration: f64,
 }
 
 /// What the player is told when it opens a file it has seen before.
@@ -224,6 +237,7 @@ impl Memory {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
+        entry.path = file.to_string();
         let chosen_here = entry.audio_track.is_some() || entry.sound_place.is_some();
         let around = around.filter(|_| !chosen_here);
         let recalled = Recalled {
@@ -334,6 +348,33 @@ impl Memory {
             current.entry.subtitle_delay = seconds;
             current.unsaved = true;
         }
+    }
+
+    /// The files played last, latest first, that are still where they were played from.
+    pub fn recent(&self, most: usize) -> Vec<Recent> {
+        let mut entries: Vec<&Remembered> = self
+            .stored
+            .files
+            .values()
+            .filter(|e| !e.path.is_empty())
+            .collect();
+        entries.sort_by(|a, b| b.updated.cmp(&a.updated));
+        let mut recent: Vec<Recent> = Vec::new();
+        for entry in entries {
+            if recent.len() >= most {
+                break;
+            }
+            if recent.iter().any(|r| r.path == entry.path) || !Path::new(&entry.path).is_file() {
+                continue;
+            }
+            recent.push(Recent {
+                name: entry.name.clone(),
+                path: entry.path.clone(),
+                position: entry.position,
+                duration: entry.duration,
+            });
+        }
+        recent
     }
 
     /// The file a folder or a playlist was left on, if it has been played before.
@@ -517,6 +558,30 @@ mod tests {
                 own_sound: true,
             }
         );
+    }
+
+    #[test]
+    fn recent_files_come_latest_first_and_only_while_they_are_there() {
+        let folder = scratch("recent");
+        let settings = folder.join("quiet.json");
+        let mut memory = Memory::beside(&settings);
+        for (name, contents) in [("first.mkv", "one film"), ("second.mkv", "another film"), ("gone.mkv", "a third")] {
+            let film = folder.join(name);
+            std::fs::write(&film, contents).unwrap();
+            memory.opened(film.to_str().unwrap());
+            memory.note(120.0, 600.0, false, true);
+            // A second apart: the order is by when each was last played.
+            std::thread::sleep(Duration::from_millis(1100));
+        }
+        memory.closed();
+        std::fs::remove_file(folder.join("gone.mkv")).unwrap();
+
+        let recent = Memory::beside(&settings).recent(8);
+        let names: Vec<&str> = recent.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["second.mkv", "first.mkv"]);
+        assert_eq!(recent[0].position, 120.0);
+        assert!(recent[0].path.ends_with("second.mkv"));
+        assert_eq!(Memory::beside(&settings).recent(1).len(), 1);
     }
 
     #[test]

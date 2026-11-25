@@ -65,6 +65,8 @@ final class InterfaceController {
             case "open-dialog": self?.chooseFiles(adding: false)
             case "add-dialog": self?.chooseFiles(adding: true)
             case "save-dialog": self?.savePlaylist()
+            case "mini": self?.toggleMini()
+            case "on-top": self?.toggleOnTop()
             default: command.withCString { callback($0, user) }
             }
         }
@@ -121,6 +123,10 @@ final class InterfaceController {
         case "pin":
             model.pinned = true
             model.reveal()
+        case "mini":
+            toggleMini()
+        case "on-top":
+            toggleOnTop()
         default:
             break
         }
@@ -141,6 +147,10 @@ final class InterfaceController {
         if flags.contains(.command) {
             if event.charactersIgnoringModifiers == "o" {
                 chooseFiles(adding: false)
+                return true
+            }
+            if event.keyCode == 35, flags.contains(.control) { // ⌃⌘P, as other players have it
+                toggleMini()
                 return true
             }
             if event.keyCode == 1 { // S
@@ -240,6 +250,57 @@ final class InterfaceController {
         panel.beginSheetModal(for: window) { [weak self] response in
             guard response == .OK, let url = panel.url else { return }
             self?.model.send("queue-save \(url.path)")
+        }
+    }
+
+    // MARK: Above everything
+
+    /// The window's place before it was made small, to go back to.
+    private var bigFrame: NSRect?
+    private var bigBehavior: NSWindow.CollectionBehavior = []
+
+    /// Keep the window above other windows, or let it go back among them.
+    private func toggleOnTop() {
+        guard let window = view.window else { return }
+        model.onTop.toggle()
+        if !model.mini { window.level = model.onTop ? .floating : .normal }
+    }
+
+    /// The player made small in a corner of the screen and kept above everything, on every
+    /// desktop and over other programs in full screen; and back to where it was.
+    private func toggleMini() {
+        guard let window = view.window else { return }
+        if window.styleMask.contains(.fullScreen) {
+            // Out of full screen first; made small once that is over.
+            model.send("exit-fullscreen")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in self?.toggleMini() }
+            return
+        }
+        if model.mini, let frame = bigFrame {
+            model.mini = false
+            window.level = model.onTop ? .floating : .normal
+            window.collectionBehavior = bigBehavior
+            window.toolbar?.isVisible = true
+            window.setFrame(frame, display: true, animate: true)
+            bigFrame = nil
+        } else if !model.mini {
+            guard let screen = window.screen ?? NSScreen.main else { return }
+            bigFrame = window.frame
+            bigBehavior = window.collectionBehavior
+            model.panel = .none
+            model.mini = true
+            // The window's shape, which is the picture's (it runs under the title bar), and a
+            // quarter of the screen's width at most.
+            let whole = window.frame.size
+            let shape = whole.height > 0 ? whole.width / whole.height : 16.0 / 9
+            let width = min(480, screen.visibleFrame.width / 4)
+            let size = NSSize(width: width, height: (width / shape).rounded())
+            let area = screen.visibleFrame
+            let frame = NSRect(x: area.maxX - size.width - 20, y: area.minY + 20, width: size.width, height: size.height)
+            window.toolbar?.isVisible = false
+            window.level = .floating
+            window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+            window.setFrame(frame, display: true, animate: true)
         }
     }
 

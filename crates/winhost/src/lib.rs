@@ -79,9 +79,14 @@ enum PanelChange {
     Clear,
 }
 
+/// How many files played lately the empty window lists.
+const RECENT_SHOWN: usize = 8;
+
 struct Session {
     player: Player,
     file_name: String,
+    /// The whole path of the file.
+    path: String,
     logged_media: String,
     logged_signal: String,
     /// Shown for a while when the file was picked up where it was left.
@@ -112,6 +117,9 @@ pub struct Host {
     speed: f64,
     /// How the picture is placed: kept the same way.
     picture: Picture,
+    /// Files played lately, read from the history when nothing is open; forgotten when a
+    /// file opens, as that changes them.
+    recent: Option<Vec<bitspring_video::history::Recent>>,
     /// False to play silently, for trying things out.
     sound: bool,
     mode: HdrMode,
@@ -175,6 +183,7 @@ impl Host {
             muted: false,
             speed: 1.0,
             picture: Picture::default(),
+            recent: None,
             sound,
             mode: saved.mode(),
             prefs: saved.clone(),
@@ -317,6 +326,7 @@ impl Host {
 
     fn play(&mut self, path: &str) {
         self.close();
+        self.recent = None;
         self.error = None;
         let file_name = Path::new(path)
             .file_name()
@@ -347,6 +357,7 @@ impl Host {
             speed: self.speed,
             subtitle_delay: recalled.subtitle_delay,
             picture: self.picture,
+            night: self.prefs.night_mode,
             volume: self.volume,
             muted: self.muted,
             subtitle_lift: self.subtitle_lift(),
@@ -376,6 +387,7 @@ impl Host {
         self.session = Some(Session {
             player,
             file_name,
+            path: path.to_string(),
             logged_media: String::new(),
             logged_signal: String::new(),
             resume_note: recalled.start.map(ResumeNote::new),
@@ -396,6 +408,7 @@ impl Host {
                 self.send(Command::SetInterpolation(self.prefs.interpolation()));
             }
             "dolbyVision" => self.send(Command::SetDolbyVision(self.prefs.dolby_vision)),
+            "nightMode" => self.send(Command::SetNight(self.prefs.night_mode)),
             "subtitleScale" | "subtitleNits" => self.send(Command::SubtitleLook {
                 scale: self.prefs.subtitle_scale,
                 nits: self.prefs.subtitle_nits,
@@ -548,6 +561,7 @@ impl Host {
             let state = State::new(View {
                 playing: Some(Playing {
                     file_name: &session.file_name,
+                    path: &session.path,
                     status: &status,
                     resumed_from: session
                         .resume_note
@@ -563,6 +577,7 @@ impl Host {
                 mode: status.mode,
                 prefs: &self.prefs,
                 queue: queue.as_ref(),
+                recent: &[],
             });
             json = serde_json::to_string(&state).ok();
         }
@@ -583,6 +598,7 @@ impl Host {
                 mode: self.mode,
                 prefs: &self.prefs,
                 queue: None,
+                recent: self.recent.get_or_insert_with(|| self.memory.recent(RECENT_SHOWN)),
             });
             json = serde_json::to_string(&state).ok();
         }

@@ -136,11 +136,13 @@ struct SettingsInfo: Codable, Equatable {
     var audioDelay: Double
     /// When a file ends, the next one of its series or its playlist starts by itself.
     var autoNext: Bool
+    /// Loud passages brought down towards the speech, for listening late or quietly.
+    var nightMode: Bool
 
     static let standard = SettingsInfo(
         displayPeak: nil, reportedPeak: 0, quality: "high", upscaling: "off", interpolation: "off", interpolations: [], hardwareDecoding: true, dolbyVision: true,
         subtitleScale: 1,
-        subtitleNits: 203, subtitleLanguage: "", audioLanguage: "", audioDelay: 0, autoNext: true)
+        subtitleNits: 203, subtitleLanguage: "", audioLanguage: "", audioDelay: 0, autoNext: true, nightMode: false)
 }
 
 /// One file of the queue.
@@ -164,9 +166,23 @@ struct QueueInfo: Codable, Equatable {
     var items: [QueueItem]
 }
 
+/// A file played lately.
+struct RecentInfo: Codable, Equatable, Identifiable {
+    var name: String
+    var path: String
+    /// Where it was stopped, 0 once watched to the end; and how long it is.
+    var position: Double
+    var duration: Double
+    var id: String { path }
+}
+
 struct Status: Codable, Equatable {
     /// Name of the open file; nil when nothing is open.
     var file: String?
+    /// Its whole path.
+    var path: String?
+    /// Files played lately, for when nothing is open.
+    var recent: [RecentInfo]
     var error: String?
     var position: Double
     var duration: Double
@@ -207,7 +223,7 @@ struct Status: Codable, Equatable {
     var queue: QueueInfo?
 
     static let empty = Status(
-        file: nil, error: nil, position: 0, duration: 0, paused: false, ended: false,
+        file: nil, path: nil, recent: [], error: nil, position: 0, duration: 0, paused: false, ended: false,
         resumedFrom: nil, volume: 1,
         muted: false, speed: 1, subtitleDelay: 0, picture: PictureInfo(shape: 0, cut: 0, fill: false),
         thumbnail: nil, savedFrames: 0, savedFrame: nil, savedFrameError: nil, fullscreen: false, mode: "auto", video: nil, signal: nil, sound: nil,
@@ -341,6 +357,11 @@ final class PlayerModel: ObservableObject {
     /// Where the seek bar should stand: the requested position until playback gets there.
     var shownPosition: Double { seekTarget ?? status.position }
 
+    /// The window is small, in a corner, above everything: the player as a picture in a picture.
+    @Published var mini = false
+    /// The window stays above other windows.
+    @Published var onTop = false
+
     /// A line said for a moment above the controls: what a key just changed.
     @Published var note: String?
     private var noteTimer: Timer?
@@ -381,11 +402,18 @@ final class PlayerModel: ObservableObject {
 
     func update(_ new: Status) {
         if new.file != status.file { thumbnails.removeAll(); thumbnailAsked = (-1, .distantPast) }
+        // The system's own list of recent files (the Dock's menu) hears of each one opened.
+        if let path = new.path, path != status.path {
+            NSDocumentController.shared.noteNewRecentDocumentURL(URL(fileURLWithPath: path))
+        }
         if let target = seekTarget, abs(new.position - target) < 1.0 { seekTarget = nil }
         // Changed while the same file plays: by a key, a menu, the system's controls.
         if new.file != nil, new.file == status.file {
             if new.speed != status.speed { say(speedNote(new.speed)) }
             if new.subtitleDelay != status.subtitleDelay { say(subtitleDelayNote(new.subtitleDelay)) }
+            if new.settings.nightMode != status.settings.nightMode {
+                say(new.settings.nightMode ? L("Night sound on", "Ночной звук включён") : L("Night sound off", "Ночной звук выключен"))
+            }
             if new.savedFrames != status.savedFrames {
                 say(new.savedFrameError == nil
                     ? L("Frame saved to Pictures", "Кадр сохранён в «Изображения»")

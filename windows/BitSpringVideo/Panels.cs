@@ -429,8 +429,13 @@ public sealed partial class MainWindow
             SliderRow(L("Brightness in HDR", "Яркость в HDR"), settings.SubtitleNits, 60, 400, 1,
                 value => $"{Nits(value)} {NitsUnit}", value => Set("subtitleNits", Number(Math.Round(value))))));
 
+        var night = new ToggleSwitch { IsOn = settings.NightMode, OnContent = "", OffContent = "", MinWidth = 0 };
+        night.Toggled += (_, _) => Set("nightMode", night.IsOn ? "1" : "0");
         panel.Children.Add(Group(
             L("Sound", "Звук"),
+            Row(L("Night sound", "Ночной звук"), night),
+            Text(L("Quiet speech raised and loud passages brought down, for late evenings and thin walls.",
+                    "Тихая речь громче, громкие сцены тише: для позднего вечера и тонких стен."), 11, quiet: true),
             SliderRow(L("Picture delay", "Задержка картинки"), settings.AudioDelay, -200, 500, 10,
                 value => $"{Math.Round(value)} {L("ms", "мс")}", value => Set("audioDelay", Number(Math.Round(value)))),
             Text(L("For a TV or receiver that delays sound.", "Для телевизора или ресивера, который задерживает звук."),

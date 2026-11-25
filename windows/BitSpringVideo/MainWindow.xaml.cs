@@ -108,7 +108,13 @@ public sealed partial class MainWindow : Window
         // The play key and the played part of the seek bar take the signal's colour.
         PlayButton.Foreground = new SolidColorBrush(Slate);
         foreach (var key in new[] { "ButtonBackground", "ButtonBackgroundPointerOver", "ButtonBackgroundPressed" })
+        {
             PlayButton.Resources[key] = live;
+            MiniPlay.Resources[key] = live;
+        }
+        foreach (var key in new[] { "ButtonForeground", "ButtonForegroundPointerOver", "ButtonForegroundPressed" })
+            MiniPlay.Resources[key] = new SolidColorBrush(Slate);
+        Tip(MiniBack, L("Back to the big window (Ctrl+Shift+P)", "Обратно в большое окно (Ctrl+Shift+P)"));
         foreach (var key in new[] { "ButtonForeground", "ButtonForegroundPointerOver", "ButtonForegroundPressed" })
             PlayButton.Resources[key] = new SolidColorBrush(Slate);
         foreach (var key in new[] { "SliderTrackValueFill", "SliderTrackValueFillPointerOver", "SliderTrackValueFillPressed" })
@@ -199,6 +205,10 @@ public sealed partial class MainWindow : Window
                 settingsFlyout.ShowAt(SettingsButton);
                 showWhenReady = null;
                 break;
+            case "mini" when state.Signal != null:
+                ToggleMini();
+                showWhenReady = null;
+                break;
             case "signal" when state.Signal != null:
                 signalFlyout.ShowAt(SignalButton);
                 showWhenReady = null;
@@ -209,6 +219,27 @@ public sealed partial class MainWindow : Window
     // ---- The window ----------------------------------------------------------------------
 
     private bool IsFullscreen => AppWindow.Presenter.Kind == AppWindowPresenterKind.FullScreen;
+
+    /// <summary>Windows' own small window above everything: the player as a picture in a picture.</summary>
+    private bool IsMini => AppWindow.Presenter.Kind == AppWindowPresenterKind.CompactOverlay;
+    private bool onTop;
+
+    private void ToggleMini()
+    {
+        AppWindow.SetPresenter(IsMini ? AppWindowPresenterKind.Default : AppWindowPresenterKind.CompactOverlay);
+        if (!IsMini) KeepOnTop(onTop);
+        controlsVisible = !controlsVisible; // shown again in the new arrangement
+        KeepOrHideControls();
+        Apply(state);
+    }
+
+    private void KeepOnTop(bool wanted)
+    {
+        onTop = wanted;
+        if (AppWindow.Presenter is OverlappedPresenter overlapped) overlapped.IsAlwaysOnTop = wanted;
+    }
+
+    private void OnMiniClick(object sender, RoutedEventArgs e) => ToggleMini();
 
     private void FitToScreen()
     {
@@ -293,6 +324,8 @@ public sealed partial class MainWindow : Window
         {
             if (s.Speed != before.Speed) Say(SpeedNote(s.Speed));
             if (s.SubtitleDelay != before.SubtitleDelay) Say(SubtitleDelayNote(s.SubtitleDelay));
+            if (s.Settings.NightMode != before.Settings.NightMode)
+                Say(s.Settings.NightMode ? L("Night sound on", "Ночной звук включён") : L("Night sound off", "Ночной звук выключен"));
             if (s.SavedFrames != before.SavedFrames)
                 Say(s.SavedFrameError == null
                     ? L("Frame saved to Pictures", "Кадр сохранён в «Изображения»")
@@ -300,13 +333,15 @@ public sealed partial class MainWindow : Window
         }
         var open = s.File != null;
         Empty.Visibility = open ? Visibility.Collapsed : Visibility.Visible;
-        Chrome.Visibility = open ? Visibility.Visible : Visibility.Collapsed;
+        Chrome.Visibility = open && !IsMini ? Visibility.Visible : Visibility.Collapsed;
+        MiniControls.Visibility = open && IsMini ? Visibility.Visible : Visibility.Collapsed;
         AppWindow.Title = open ? $"{s.File} - BitSpring Video" : "BitSpring Video";
 
         EmptyDisplay.Text = DisplayLine(s.Display);
         EmptyDisplay.Foreground = s.Display.Hdr == "off" ? Resource("BrassBrush") : Resource("QuietBrush");
         EmptyError.Text = s.Error ?? "";
         EmptyError.Visibility = s.Error == null ? Visibility.Collapsed : Visibility.Visible;
+        ShowRecent(s);
         ResumeNote.Visibility = open && s.ResumedFrom != null && KeyNote.Visibility != Visibility.Visible
             ? Visibility.Visible : Visibility.Collapsed;
         if (s.ResumedFrom is double from)
@@ -336,6 +371,9 @@ public sealed partial class MainWindow : Window
         SignalTreatment.Text = treatment is Treatment known ? TreatmentShort(known) : "";
 
         PlayGlyph.Glyph = s.Ended ? "" : s.Paused ? "" : "";
+        MiniPlayGlyph.Glyph = PlayGlyph.Glyph;
+        MiniProgress.Fill = live;
+        MiniProgress.Width = s.Duration > 0 && Root.ActualWidth > 0 ? Root.ActualWidth * Math.Clamp(s.Position / s.Duration, 0, 1) : 0;
         Tip(PlayButton, s.Paused ? L("Play", "Играть") : L("Pause", "Пауза"));
 
         // The seek bar stands where the user put it until playback gets there.
@@ -403,10 +441,19 @@ public sealed partial class MainWindow : Window
                    (DateTime.UtcNow - lastPointer).TotalSeconds < 2.6;
         if (keep == controlsVisible) return;
         controlsVisible = keep;
+        // Small, the window holds only what a glance needs.
+        var big = !IsMini;
+        Chrome.Visibility = big && state.File != null ? Visibility.Visible : Visibility.Collapsed;
+        SettingsPill.Visibility = big ? Visibility.Visible : Visibility.Collapsed;
+        MiniControls.Visibility = big || state.File == null ? Visibility.Collapsed : Visibility.Visible;
         Chrome.Opacity = keep ? 1 : 0;
         Chrome.IsHitTestVisible = keep;
         SettingsPill.Opacity = keep ? 1 : 0;
         SettingsPill.IsHitTestVisible = keep;
+        MiniPlay.Opacity = keep ? 1 : 0;
+        MiniPlay.IsHitTestVisible = keep;
+        MiniBack.Opacity = keep ? 1 : 0;
+        MiniBack.IsHitTestVisible = keep;
         // Subtitles move up out of the controls' way, and back down when they go.
         player.Send(keep ? "controls 1" : "controls 0");
     }
@@ -558,6 +605,7 @@ public sealed partial class MainWindow : Window
         Key((VirtualKey)188 /* , */, () => player.Send("step -1"));
         Key((VirtualKey)190 /* . */, () => player.Send("step 1"));
         Key(VirtualKey.S, () => player.Send("save-frame"), VirtualKeyModifiers.Control);
+        Key(VirtualKey.P, ToggleMini, VirtualKeyModifiers.Control | VirtualKeyModifiers.Shift);
         Key(VirtualKey.N, () => player.Send("next"));
         Key(VirtualKey.P, () => player.Send("previous"));
         Key(VirtualKey.L, () => { if (state.Queue != null) queueFlyout.ShowAt(QueueButton); });
@@ -630,7 +678,75 @@ public sealed partial class MainWindow : Window
         fill.Click += (_, _) => player.Send(p.Fill ? "picture-fill 0" : "picture-fill 1");
         menu.Items.Add(fill);
         menu.Items.Add(new MenuFlyoutSeparator());
+        var top = new ToggleMenuFlyoutItem { Text = L("Keep above other windows", "Поверх других окон"), IsChecked = onTop };
+        top.Click += (_, _) => KeepOnTop(!onTop);
+        menu.Items.Add(top);
+        var mini = new MenuFlyoutItem { Text = L("Small, in a corner", "Маленьким, в углу"), KeyboardAcceleratorTextOverride = "Ctrl+Shift+P" };
+        mini.Click += (_, _) => ToggleMini();
+        menu.Items.Add(mini);
+        menu.Items.Add(new MenuFlyoutSeparator());
         menu.Items.Add(Action(L("Save this frame", "Сохранить кадр"), "Ctrl+S", "save-frame"));
+    }
+
+    // ---- Files played lately -------------------------------------------------------------------
+
+    private string recentShown = "";
+
+    private void ShowRecent(PlayerState s)
+    {
+        var key = string.Join("|", s.Recent.Select(r => r.Path + r.Position));
+        if (key == recentShown) return;
+        recentShown = key;
+        RecentList.Children.Clear();
+        RecentList.Visibility = s.Recent.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        if (s.Recent.Count == 0) return;
+        RecentList.Children.Add(new TextBlock
+        {
+            Text = L("Played lately", "Недавно смотрели"),
+            FontSize = 12,
+            Margin = new Thickness(12, 0, 0, 4),
+            Foreground = Resource("QuietBrush"),
+        });
+        foreach (var file in s.Recent)
+        {
+            var row = new Grid { Height = 30, Padding = new Thickness(12, 0, 12, 0) };
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            var name = new TextBlock
+            {
+                Text = file.Name,
+                FontSize = 13,
+                FontWeight = Microsoft.UI.Text.FontWeights.Medium,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                VerticalAlignment = VerticalAlignment.Center,
+                Foreground = Resource("PorcelainBrush"),
+            };
+            var where = new TextBlock
+            {
+                Text = file.Position > 0
+                    ? L($"stopped at {Clock(file.Position)}", $"остановлено на {Clock(file.Position)}")
+                    : file.Duration > 0 ? L("watched", "досмотрено") : "",
+                FontSize = 12,
+                Margin = new Thickness(16, 0, 0, 0),
+                VerticalAlignment = VerticalAlignment.Center,
+                Foreground = Resource("QuietBrush"),
+            };
+            Grid.SetColumn(where, 1);
+            row.Children.Add(name);
+            row.Children.Add(where);
+            var button = new Button
+            {
+                Content = row,
+                Style = (Style)Root.Resources["OnGlass"],
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                HorizontalContentAlignment = HorizontalAlignment.Stretch,
+                Padding = new Thickness(0),
+            };
+            var path = file.Path;
+            button.Click += (_, _) => player.Send("open " + path);
+            ToolTipService.SetToolTip(button, path);
+            RecentList.Children.Add(button);
+        }
     }
 
     // ---- The small picture over the seek bar ---------------------------------------------------

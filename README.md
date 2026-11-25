@@ -53,6 +53,15 @@ Early. What works today, on the Mac:
   picture menu), the very picture on screen, at the video's size; HDR is brought down to SDR
   for it, as for the small pictures (`BSV_PICTURES` names another folder)
 - Picture by picture while paused: comma goes one back, full stop one on
+- Night sound, in the settings: quiet speech raised and loud passages brought down
+  (FFmpeg's compand, then a limiter). On ten minutes of an action film the loudness range
+  went from 12.8 LU to 5.8 at much the same loudness; the picture still meets its sound
+- The files played lately, listed when nothing is open, with where each was stopped; on the
+  Mac they are in the Dock's menu as well
+- Kept above other windows, or made small in a corner (Cmd+Ctrl+P on the Mac, Ctrl+Shift+P on
+  Windows, or the picture menu): above everything, on every desktop and over other programs
+  in full screen, drawn by the player itself, HDR included. On Windows that is the system's
+  own compact overlay
 - Subtitles moved to meet the speech, earlier or later by tenths of a second (up to 30 s
   either way), from the subtitles menu or a key; kept for that file. Subtitles inside the
   video are read ahead by as much as they are moved earlier, so they arrive in time

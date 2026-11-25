@@ -140,6 +140,21 @@ private struct SettingsPanel: View {
             }
 
             group(L("Sound", "Звук")) {
+                row(L("Night sound", "Ночной звук")) {
+                    Toggle("", isOn: Binding(
+                        get: { settings.nightMode },
+                        set: { model.set("nightMode", $0 ? "1" : "0") }))
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                        .labelsHidden()
+                        .tint(Color.porcelain.opacity(0.85))
+                }
+                Text(L(
+                    "Quiet speech raised and loud passages brought down, for late evenings and thin walls.",
+                    "Тихая речь громче, громкие сцены тише: для позднего вечера и тонких стен."))
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.quiet)
+                    .fixedSize(horizontal: false, vertical: true)
                 slider(
                     L("Picture delay", "Задержка картинки"),
                     value: settings.audioDelay, in: -200...500, step: 10,

@@ -338,6 +338,7 @@ unsafe extern "C" {
         rate: c_int,
         channels: c_int,
         speed: c_double,
+        night: c_int,
         error: *mut c_char,
         error_len: c_int,
     ) -> *mut bsv_tempo;

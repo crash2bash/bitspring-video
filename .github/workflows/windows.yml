@@ -302,6 +302,12 @@ jobs:
           # its signal panel and plays on, and that the network's library loads at all.
           '{"quality":"fast","interpolation":"neural"}' | Set-Content "$here\shots\settings.json"
           Photograph "10-motion" 25 @("$here\clip\series\Show-02.mkv", "--show", "signal")
+          # Windows' own small window above everything, and, the clip having been played and
+          # closed the way a person closes it, the window with nothing open lists it.
+          '{"quality":"fast"}' | Set-Content "$here\shots\settings.json"
+          Remove-Item "$here\shots\history.json" -ErrorAction SilentlyContinue
+          Photograph "11-mini" 14 @($clip, "--show", "mini") $true
+          Photograph "12-recent" 8 @() $true
           if (-not (Test-Path "$here\BitSpring-Video-windows\libncnn.dll")) {
             throw "The neural network's library is not in the folder"
           }

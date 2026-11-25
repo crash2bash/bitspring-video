@@ -88,6 +88,8 @@ pub struct Options {
     pub subtitle_delay: f64,
     /// How the picture is placed in the window.
     pub picture: Picture,
+    /// Loud passages brought down towards the speech.
+    pub night: bool,
     /// 0.0 to 1.0.
     pub volume: f32,
     pub muted: bool,
@@ -154,6 +156,8 @@ pub enum Command {
     Step(i32),
     /// Place the picture in the window this way.
     SetPicture(Picture),
+    /// Bring loud passages down towards the speech, or not.
+    SetNight(bool),
     /// Show the subtitles of this file, which may be anywhere: it was opened by hand.
     AddSubtitles(String),
     /// Play the sound of this file with the picture; it too was opened by hand.
@@ -194,6 +198,7 @@ pub struct Status {
     /// Seconds subtitles are shown late (negative: early).
     pub subtitle_delay: f64,
     pub picture: Picture,
+    pub night: bool,
     /// The latest small picture asked for over the seek bar: its time, and the PNG it is in.
     pub thumbnail: Option<(f64, String)>,
     /// The frames saved whole so far, and where the last went (or why it could not be).
@@ -372,6 +377,7 @@ impl Player {
             speed: options.speed,
             subtitle_delay: options.subtitle_delay,
             picture: options.picture,
+            night: options.night,
             ..Status::default()
         }));
         let (stills, jobs) = channel();
@@ -606,6 +612,8 @@ struct Shared {
     /// Seconds of video read ahead beyond the usual, as `f64` bits: subtitles shown early
     /// have to have been read that much earlier.
     read_ahead: AtomicU64,
+    /// Night mode, which the reading thread puts on the sound after a jump.
+    night: AtomicBool,
 }
 
 impl Shared {
@@ -818,8 +826,8 @@ impl SoundPath {
     }
 
     /// Forget everything not yet played: the step before sound from a new position. From
-    /// there it plays at `speed`.
-    fn flush(&mut self, speed: f64) {
+    /// there it plays at `speed`, and with `night` its loud passages evened out.
+    fn flush(&mut self, speed: f64, night: bool) {
         self.decoder.flush();
         self.output.flush();
         self.silence = 0;
@@ -829,21 +837,22 @@ impl SoundPath {
         // A fresh one each time: what the last one held belongs to the old position.
         self.tempo = None;
         self.speed = 1.0;
-        if (speed - 1.0).abs() > 1e-3 {
+        let faster = (speed - 1.0).abs() > 1e-3;
+        if faster || night {
             let format = self.output.format();
-            match Tempo::open(format.sample_rate, format.channels, speed) {
+            match Tempo::open(format.sample_rate, format.channels, speed, night) {
                 Ok(tempo) => {
                     self.tempo = Some(tempo);
-                    self.speed = speed;
+                    self.speed = if faster { speed } else { 1.0 };
                 }
-                Err(e) => eprintln!("[warn] the sound plays at its own speed: {e}"),
+                Err(e) => eprintln!("[warn] the sound plays as it is: {e}"),
             }
         }
     }
 
     /// How far ahead of its time the sound is heard, in the film's seconds.
     fn lead(&self) -> f64 {
-        if self.tempo.is_some() { TEMPO_LEAD } else { 0.0 }
+        if self.speed != 1.0 { TEMPO_LEAD } else { 0.0 }
     }
 
     /// The file has no more sound. If none came at all for where playback starts (the track
@@ -1462,7 +1471,7 @@ fn read_loop(mut source: Source, reading: Reading) {
             // Sound is silenced first: once the video thread sees the flush, the device's clock
             // no longer reports the old position.
             if let Some(path) = &mut sound {
-                path.flush(shared.speed());
+                path.flush(shared.speed(), shared.night.load(Ordering::Relaxed));
             }
             video.clear();
             video.push_control(Item::Flush { generation, to });
@@ -1921,6 +1930,7 @@ fn render_loop(
         in_between_ms: AtomicU32::new(0),
         speed: AtomicU64::new(1.0f64.to_bits()),
         read_ahead: AtomicU64::new(0.0f64.to_bits()),
+        night: AtomicBool::new(false),
     });
     let packets = Arc::new(PacketQueue::new());
     let (reader_commands, reader_rx) = channel();
@@ -1999,6 +2009,10 @@ fn render_loop(
     if options.speed != 1.0 {
         pending.push_back(Command::SetSpeed(options.speed));
     }
+    let mut night = false;
+    if options.night {
+        pending.push_back(Command::SetNight(true));
+    }
     let mut speed = 1.0;
     let mut subtitle_delay = 0.0;
     if options.subtitle_delay != 0.0 {
@@ -2050,6 +2064,14 @@ fn render_loop(
                         // The one before has gone: it is decoded again from its keyframe.
                         let to = (timeline.floor + frame * step as f64).max(0.0);
                         jump = Some((to, None, None));
+                    }
+                }
+                Ok(Command::SetNight(wanted)) => {
+                    if wanted != night {
+                        night = wanted;
+                        shared.night.store(night, Ordering::Relaxed);
+                        // The sound is made again from here through the new filters.
+                        jump = Some((timeline.position(), None, None));
                     }
                 }
                 Ok(Command::SetPicture(wanted)) => {
@@ -2451,6 +2473,7 @@ fn render_loop(
         s.speed = speed;
         s.subtitle_delay = subtitle_delay;
         s.picture = picture;
+        s.night = night;
         s.underruns = timeline
             .sound
             .as_ref()
@@ -2518,6 +2541,7 @@ mod tests {
             speed: 1.0,
             subtitle_delay: 0.0,
             picture: Picture::default(),
+            night: false,
             volume: 1.0,
             muted: false,
             subtitle_lift: 0.0,

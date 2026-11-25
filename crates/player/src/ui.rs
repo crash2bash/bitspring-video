@@ -260,6 +260,10 @@ impl Drop for Interface {
 #[serde(rename_all = "camelCase")]
 pub struct State {
     file: Option<String>,
+    /// The whole path of the file open.
+    path: Option<String>,
+    /// Files played lately, for when nothing is open.
+    recent: Vec<RecentState>,
     error: Option<String>,
     position: f64,
     duration: f64,
@@ -320,6 +324,16 @@ struct SettingsState {
     audio_language: String,
     audio_delay: f32,
     auto_next: bool,
+    night_mode: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RecentState {
+    name: String,
+    path: String,
+    position: f64,
+    duration: f64,
 }
 
 #[derive(Serialize, Default)]
@@ -464,6 +478,7 @@ fn mode_name(mode: HdrMode) -> &'static str {
 /// What is open, for [`State::new`].
 pub struct Playing<'a> {
     pub file_name: &'a str,
+    pub path: &'a str,
     pub status: &'a playback::Status,
     /// Where the file was picked up from, when it was seen before and not finished.
     pub resumed_from: Option<f64>,
@@ -483,6 +498,8 @@ pub struct View<'a> {
     pub mode: HdrMode,
     pub prefs: &'a Preferences,
     pub queue: Option<&'a QueueState>,
+    /// Files played lately; shown when nothing is open.
+    pub recent: &'a [crate::history::Recent],
 }
 
 impl State {
@@ -498,6 +515,7 @@ impl State {
             mode,
             prefs,
             queue,
+            recent,
         } = view;
         let settings = SettingsState {
             display_peak: prefs.display_peak,
@@ -521,6 +539,7 @@ impl State {
             audio_language: prefs.audio_language.clone(),
             audio_delay: prefs.audio_delay_ms,
             auto_next: prefs.auto_next,
+            night_mode: prefs.night_mode,
         };
         let display_state = DisplayState {
             name: display.name.clone(),
@@ -537,14 +556,26 @@ impl State {
             },
             peak_known: display.luminance.source != LuminanceSource::Assumed,
         };
+        let recent: Vec<RecentState> = recent
+            .iter()
+            .map(|r| RecentState {
+                name: r.name.clone(),
+                path: r.path.clone(),
+                position: r.position,
+                duration: r.duration,
+            })
+            .collect();
         let Some(Playing {
             file_name,
+            path,
             status,
             resumed_from,
         }) = playing
         else {
             return State {
                 file: None,
+                path: None,
+                recent,
                 error: error.map(str::to_string),
                 position: 0.0,
                 duration: 0.0,
@@ -651,6 +682,8 @@ impl State {
 
         State {
             file: Some(file_name.to_string()),
+            path: Some(path.to_string()),
+            recent,
             error: None,
             // Whole tenths: the interface is only told when the time it shows could change.
             position: (status.position * 10.0).floor() / 10.0,

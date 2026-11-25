@@ -210,10 +210,11 @@ int bsv_still_save(bsv_still *s, double seconds, int width, int exact, const cha
 // ---- Sound at another speed --------------------------------------------------------------
 
 // Interleaved 32-bit float in and out, at one rate and channel count, made `speed` times as
-// fast (0.5 to 4) without changing its pitch. What comes out lags what goes in by a few
-// tens of milliseconds; send 0 frames at the end to have the rest.
+// fast (0.5 to 4) without changing its pitch, and with `night` its loud passages brought down
+// towards the speech. Sound sped up comes out a few tens of milliseconds behind what goes in;
+// send 0 frames at the end to have the rest.
 typedef struct bsv_tempo bsv_tempo;
-bsv_tempo *bsv_tempo_open(int rate, int channels, double speed, char *error, int error_len);
+bsv_tempo *bsv_tempo_open(int rate, int channels, double speed, int night, char *error, int error_len);
 void bsv_tempo_close(bsv_tempo *t);
 int bsv_tempo_send(bsv_tempo *t, const float *samples, int frames);
 // 1: `*samples` holds `*frames` frames, valid until the next call. 0: wants more. 2: all out.

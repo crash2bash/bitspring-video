@@ -215,6 +215,9 @@ struct PlayerOverlay: View {
                         .padding(.top, Layout.topInset)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                 }
+            } else if model.mini {
+                // Small, the window holds only what a glance needs.
+                if model.controlsVisible { MiniControls(model: model).transition(.opacity) }
             } else if model.controlsVisible {
                 controls.transition(.opacity)
             }
@@ -314,6 +317,57 @@ struct PlayerOverlay: View {
                 }
                 .frame(width: width)
             }
+        }
+    }
+}
+
+// MARK: - Small, in a corner
+
+/// The controls of the small window: playing or paused in the middle, the way back to the
+/// big window, and how far the film has gone.
+private struct MiniControls: View {
+    @ObservedObject var model: PlayerModel
+
+    var body: some View {
+        let status = model.status
+        ZStack {
+            Button {
+                model.send(status.ended ? "seek-to 0" : "toggle-pause")
+            } label: {
+                Image(systemName: status.ended ? "arrow.counterclockwise" : (status.paused ? "play.fill" : "pause.fill"))
+                    .font(.system(size: 17, weight: .bold))
+                    .foregroundStyle(Color.slate)
+                    .frame(width: 44, height: 44)
+                    .background(Circle().fill(status.treatment?.color ?? .porcelain))
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .onHover { model.hover("mini-play", $0) }
+
+            Button {
+                model.send("mini")
+            } label: {
+                Image(systemName: "arrow.up.left.and.arrow.down.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .frame(width: 30, height: 30)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .glassEffect(playerGlass(interactive: true), in: .circle)
+            .help(L("Back to the big window (⌃⌘P)", "Обратно в большое окно (⌃⌘P)"))
+            .onHover { model.hover("mini-back", $0) }
+            .padding(10)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+
+            // How far it has gone: a line along the bottom edge, in the signal's colour.
+            GeometryReader { geometry in
+                let fraction = status.duration > 0 ? min(max(model.shownPosition / status.duration, 0), 1) : 0
+                Rectangle()
+                    .fill(status.treatment?.color ?? .porcelain)
+                    .frame(width: geometry.size.width * fraction, height: 3)
+                    .frame(maxHeight: .infinity, alignment: .bottom)
+            }
+            .allowsHitTesting(false)
         }
     }
 }
@@ -976,6 +1030,11 @@ private struct Transport: View {
                     get: { status.picture.fill },
                     set: { model.send("picture-fill \($0 ? 1 : 0)") }))
                 Divider()
+                Toggle(L("Keep above other windows", "Поверх других окон"), isOn: Binding(
+                    get: { model.onTop },
+                    set: { _ in model.send("on-top") }))
+                Button(L("Small, in a corner (⌃⌘P)", "Маленьким, в углу (⌃⌘P)")) { model.send("mini") }
+                Divider()
                 Button(L("Save this frame (⌘S)", "Сохранить кадр (⌘S)")) { model.send("save-frame") }
             } label: {
                 Image(systemName: "aspectratio")
@@ -1199,6 +1258,51 @@ struct Track: View {
 
 // MARK: - Nothing open
 
+/// The files played lately, to pick one up again with a click.
+private struct RecentList: View {
+    @ObservedObject var model: PlayerModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(L("Played lately", "Недавно смотрели"))
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Color.quiet)
+                .padding(.horizontal, 12)
+                .padding(.bottom, 4)
+            ForEach(model.status.recent) { file in
+                Button {
+                    model.send("open " + file.path)
+                } label: {
+                    HStack(spacing: 16) {
+                        Text(file.name)
+                            .font(.system(size: 13, weight: .medium))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer(minLength: 8)
+                        Text(where_(file))
+                            .font(.figures(12))
+                            .foregroundStyle(Color.quiet)
+                    }
+                    .padding(.horizontal, 12)
+                    .frame(height: 30)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(file.path)
+            }
+        }
+        .frame(width: 460)
+    }
+
+    /// Where it was left: "stopped at 42:10", or "watched".
+    private func where_(_ file: RecentInfo) -> String {
+        if file.position > 0 {
+            return L("stopped at \(clock(file.position))", "остановлено на \(clock(file.position))")
+        }
+        return file.duration > 0 ? L("watched", "досмотрено") : ""
+    }
+}
+
 private struct EmptyState: View {
     @ObservedObject var model: PlayerModel
 
@@ -1241,6 +1345,11 @@ private struct EmptyState: View {
             .buttonStyle(.plain)
             .glassEffect(Glass.regular.interactive(), in: .capsule)
             .padding(.top, 8)
+
+            if !model.status.recent.isEmpty {
+                RecentList(model: model)
+                    .padding(.top, 18)
+            }
         }
         .padding(40)
     }

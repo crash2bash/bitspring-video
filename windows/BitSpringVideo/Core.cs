@@ -130,6 +130,10 @@ internal sealed class Player : IDisposable
 internal sealed class PlayerState
 {
     public string? File;
+    /// <summary>Its whole path.</summary>
+    public string? Path;
+    /// <summary>Files played lately, for when nothing is open.</summary>
+    public List<RecentInfo> Recent = new();
     public string? Error;
     public double Position;
     public double Duration;
@@ -294,6 +298,15 @@ internal sealed class TrackInfo
     public bool Pictures;
 }
 
+internal sealed class RecentInfo
+{
+    public string Name = "";
+    public string Path = "";
+    /// <summary>Where it was stopped, 0 once watched to the end; and how long it is.</summary>
+    public double Position;
+    public double Duration;
+}
+
 internal sealed class PictureInfo
 {
     /// <summary>Width over height it is shown at; 0 for its own.</summary>
@@ -347,6 +360,8 @@ internal sealed class SettingsInfo
     public double AudioDelay;
     /// <summary>When a file ends, the next one of its series or its playlist starts by itself.</summary>
     public bool AutoNext = true;
+    /// <summary>Loud passages brought down towards the speech, for listening late or quietly.</summary>
+    public bool NightMode;
 }
 
 internal sealed class QueueItem
