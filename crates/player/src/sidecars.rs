@@ -128,6 +128,10 @@ fn look_in(
         if !ending(&path).is_some_and(|e| ENDINGS.contains(&e.as_str())) {
             continue;
         }
+        // A link is taken only if it leads to a file on this machine.
+        if entry.file_type().is_ok_and(|t| t.is_symlink()) && !crate::queue::stays_here(&path) {
+            continue;
+        }
         let lower = name.to_lowercase();
         let Some(rest) = lower.strip_prefix(stem) else {
             continue;

@@ -148,8 +148,14 @@ fn videos_in(folder: &Path, keep: Option<&Path>) -> Vec<PathBuf> {
         // Not the "._name" files a Mac leaves beside real ones on disks of other systems.
         .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
         .filter(|e| e.file_type().is_ok_and(|t| !t.is_dir()))
+        .filter(|e| is_video(&e.path()) || keep == Some(e.path().as_path()))
+        // A link among the folder's files is listed only if it leads to a file on this
+        // machine: nobody chose it by hand, and playing it would go wherever it leads.
+        .filter(|e| {
+            let link = e.file_type().is_ok_and(|t| t.is_symlink());
+            !link || keep == Some(e.path().as_path()) || stays_here(&e.path())
+        })
         .map(|e| e.path())
-        .filter(|p| is_video(p) || keep == Some(p.as_path()))
         .collect();
     found.sort_by(|a, b| natural(&stem_of(a), &stem_of(b)).then_with(|| a.cmp(b)));
     found.truncate(MOST_ITEMS);
@@ -292,7 +298,7 @@ fn steps_of(path: &Path) -> Vec<Step> {
 /// its place, and ".." steps back from where the links before it really led. Each place is
 /// judged by its name before anything is asked about it, so no connection is made on the
 /// way. `false` for a path that leads elsewhere, or that cannot be walked.
-fn stays_here(path: &Path) -> bool {
+pub fn stays_here(path: &Path) -> bool {
     /// More links than this in one path is a loop.
     const MOST_LINKS: usize = 40;
     let mut ahead = steps_of(path);
@@ -1108,6 +1114,15 @@ mod tests {
         let list = folder.join("list.m3u8");
         std::fs::write(&list, "away/film.mkv\nnear/film.mkv\ntwice/film.mkv\n").unwrap();
         assert_eq!(read_playlist(&list), Ok(vec![folder.join("near/film.mkv")]));
+
+        // The same holds for a folder's own files: a link to a film here is one of them,
+        // a link to a film elsewhere is not.
+        std::os::unix::fs::symlink("film.mkv", folder.join("real/again.mkv")).unwrap();
+        std::os::unix::fs::symlink("/net/server/far.mkv", folder.join("real/far.mkv")).unwrap();
+        assert_eq!(
+            videos_in(&folder.join("real"), None),
+            [folder.join("real/again.mkv"), film.clone()]
+        );
     }
 
     #[test]
