@@ -308,6 +308,8 @@ fn stays_here(path: &Path) -> bool {
             }
             Step::Up => {
                 here.pop();
+                // Back among things that may exist: what follows is looked at again.
+                exists = true;
                 continue;
             }
             Step::Name(name) => name,
@@ -325,11 +327,20 @@ fn stays_here(path: &Path) -> bool {
                 let Ok(target) = std::fs::read_link(&here) else {
                     return false;
                 };
-                // Windows may write where a link leads as "\??\C:\films", or "\??\UNC\server\films".
+                // Windows may write where a link leads as "\\??\\C:\\films". Only a disk of this
+                // machine may follow that beginning: a share or a device may not.
                 let written = target.to_string_lossy().into_owned();
                 let target = match written.strip_prefix("\\??\\") {
-                    Some(rest) if rest.to_ascii_uppercase().starts_with("UNC\\") => return false,
-                    Some(rest) => PathBuf::from(rest),
+                    Some(rest) => {
+                        let bytes = rest.as_bytes();
+                        let on_a_disk = bytes.first().is_some_and(u8::is_ascii_alphabetic)
+                            && bytes.get(1) == Some(&b':')
+                            && matches!(bytes.get(2), Some(b'\\' | b'/'));
+                        if !on_a_disk {
+                            return false;
+                        }
+                        PathBuf::from(rest)
+                    }
                     None => target,
                 };
                 if links > MOST_LINKS || leads_elsewhere(&target.to_string_lossy()) {
@@ -1090,6 +1101,8 @@ mod tests {
         assert!(!stays_here(&folder.join("sideways/film.mkv")));
         assert!(stays_here(&folder.join("back/film.mkv")));
         assert!(stays_here(&folder.join("near/../real/film.mkv")));
+        // Stepping back from a name that is not there does not end the looking.
+        assert!(!stays_here(&folder.join("nothing/../away/film.mkv")));
 
         // Read from its file, a playlist gives only what stays here and is there.
         let list = folder.join("list.m3u8");
