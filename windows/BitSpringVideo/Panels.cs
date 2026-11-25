@@ -234,6 +234,20 @@ public sealed partial class MainWindow
                 yield return (L("Scaling", "Масштаб"),
                     L($"Doubled to {size} by a neural network (ArtCNN)", $"Удвоено до {size} нейросетью (ArtCNN)"));
             }
+            var neural = s.Settings.Interpolation == "neural";
+            var motion = s.Signal?.InBetween switch
+            {
+                "on" => (neural
+                        ? L("Frames added in between by a neural network (RIFE)", "Промежуточные кадры от нейросети (RIFE)")
+                        : L("Frames added in between by the system", "Промежуточные кадры от системы"))
+                    + (v.Fps > 0 ? ", " + Trimmed(v.Fps * 2) + L(" fps", " кадр/с") : ""),
+                "unsuited" => L("No frames in between: only for 8-bit video at up to 30 fps",
+                    "Промежуточных кадров нет: только для 8-битного видео до 30 кадр/с"),
+                "slow" => L("Frames in between given up: this computer cannot make them in time",
+                    "Промежуточные кадры отключены: этот компьютер не успевает их делать"),
+                _ => null,
+            };
+            if (motion != null) yield return (L("Motion", "Движение"), motion);
         }
         if (s.Signal is SignalInfo o)
         {
@@ -367,8 +381,8 @@ public sealed partial class MainWindow
         var decoder = new ToggleSwitch { IsOn = settings.HardwareDecoding, OnContent = "", OffContent = "", MinWidth = 0 };
         decoder.Toggled += (_, _) => Set("hardwareDecoding", decoder.IsOn ? "1" : "0");
 
-        panel.Children.Add(Group(
-            L("Picture", "Картинка"),
+        var picture = new List<UIElement>
+        {
             peakRow, peakNote, useOwn,
             Text(L("Rendering", "Обработка"), quiet: true),
             Choices(
@@ -382,8 +396,23 @@ public sealed partial class MainWindow
                 L("A neural network doubles a picture smaller than the window. Restoring also takes away what compression left.",
                   "Нейросеть удваивает картинку, которая меньше окна. «С очисткой» заодно убирает следы сжатия."),
                 11, quiet: true),
-            Row(L("The graphics card's video decoder", "Аппаратный декодер"), decoder,
-                L("From the next file", "Со следующего файла"))));
+        };
+        // Only the ways of making frames in between that this build has; none, no row.
+        if (settings.Interpolations.Count > 0)
+        {
+            var presets = new List<(string, string)> { ("off", L("Off", "Выкл")) };
+            presets.AddRange(settings.Interpolations.Select(
+                name => (name, name == "fast" ? L("Fast", "Быстрая") : L("Neural", "Нейросеть"))));
+            picture.Add(Text(L("Motion", "Плавность"), quiet: true));
+            picture.Add(Choices(presets.ToArray(), settings.Interpolation, value => Set("interpolation", value)));
+            picture.Add(Text(
+                L("A frame is made between every two: 25 pictures a second become 50. For videos at up to 30 a second.",
+                  "Между каждыми двумя кадрами добавляется промежуточный: 25 кадров в секунду становятся 50. Для видео до 30 кадр/с."),
+                11, quiet: true));
+        }
+        picture.Add(Row(L("The graphics card's video decoder", "Аппаратный декодер"), decoder,
+            L("From the next file", "Со следующего файла")));
+        panel.Children.Add(Group(L("Picture", "Картинка"), picture.ToArray()));
 
         panel.Children.Add(Group(
             L("Subtitles", "Субтитры"),

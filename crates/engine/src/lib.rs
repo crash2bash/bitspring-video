@@ -207,6 +207,108 @@ pub struct Frame {
 // SAFETY: an AVFrame is plain reference-counted data with no thread affinity.
 unsafe impl Send for Frame {}
 
+impl Frame {
+    /// The same picture a second time: both are valid until dropped, neither is copied.
+    pub fn share(&self) -> Option<Frame> {
+        // SAFETY: the frame is alive; the copy is a new reference to the same buffers.
+        let ptr = unsafe { ffi::bsv_frame_share(self.ptr.as_ptr()) };
+        NonNull::new(ptr).map(|ptr| Frame {
+            ptr,
+            pts: self.pts,
+            duration: self.duration,
+        })
+    }
+}
+
+/// A way of making the frame that belongs between two neighbouring ones.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Interpolation {
+    /// The system's own (VideoToolbox on the Mac): quick, 8-bit pictures up to 1920x1080.
+    System = 1,
+    /// RIFE, a neural network run on the GPU.
+    Neural = 2,
+}
+
+impl Interpolation {
+    /// Whether this program was built with the method at all.
+    pub fn built(self) -> bool {
+        match self {
+            Interpolation::System => cfg!(target_os = "macos"),
+            Interpolation::Neural => false,
+        }
+    }
+}
+
+/// What came of asking for the frame between two others.
+pub enum Between {
+    Made(Frame),
+    /// The two are of different shots: nothing belongs between them.
+    Cut,
+    /// Not a kind of picture this maker takes.
+    Unsuited,
+}
+
+/// Makes frames in between, for one size of picture. See `c/bsv.h`.
+pub struct Interpolator {
+    ptr: NonNull<ffi::bsv_between>,
+}
+
+// SAFETY: the maker is only ever used from the one thread that owns it.
+unsafe impl Send for Interpolator {}
+
+impl Interpolator {
+    pub fn open(method: Interpolation, width: u32, height: u32) -> Result<Interpolator, Error> {
+        let mut error = [0 as c_char; 256];
+        // SAFETY: the error buffer outlives the call.
+        let ptr = unsafe {
+            ffi::bsv_between_open(
+                method as c_int,
+                width as c_int,
+                height as c_int,
+                error.as_mut_ptr(),
+                error.len() as c_int,
+            )
+        };
+        NonNull::new(ptr)
+            .map(|ptr| Interpolator { ptr })
+            .ok_or_else(|| Error(text(&error)))
+    }
+
+    /// The frame for the moment half-way from `a` to `b`, which follows it.
+    pub fn between(&mut self, a: &Frame, b: &Frame) -> Result<Between, Error> {
+        let mut made = std::ptr::null_mut();
+        let (mut moved, mut relit) = (0.0, 0.0);
+        // SAFETY: both frames are alive for the call, which only reads them.
+        let result = unsafe {
+            ffi::bsv_between_make(
+                self.ptr.as_ptr(),
+                a.ptr.as_ptr(),
+                b.ptr.as_ptr(),
+                &mut made,
+                &mut moved,
+                &mut relit,
+            )
+        };
+        match (result, NonNull::new(made)) {
+            (1, Some(ptr)) => Ok(Between::Made(Frame {
+                ptr,
+                pts: (a.pts + b.pts) / 2.0,
+                duration: (b.pts - a.pts) / 2.0,
+            })),
+            (0, _) => Ok(Between::Cut),
+            (-2, _) => Ok(Between::Unsuited),
+            _ => Err(Error("the frame in between could not be made".into())),
+        }
+    }
+}
+
+impl Drop for Interpolator {
+    fn drop(&mut self) {
+        // SAFETY: we own the maker.
+        unsafe { ffi::bsv_between_close(self.ptr.as_ptr()) };
+    }
+}
+
 impl Drop for Frame {
     fn drop(&mut self) {
         // SAFETY: we own the AVFrame until it is handed to a Gpu, which forgets the Frame.

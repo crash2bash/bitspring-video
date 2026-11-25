@@ -145,6 +145,29 @@ int bsv_video_receive(bsv_video *v, struct bsv_frame *out);
 // After a seek: forget everything in flight.
 void bsv_video_flush(bsv_video *v, double seconds);
 void bsv_frame_free(void *avframe);
+// Another reference to the same picture, to be freed like any frame.
+void *bsv_frame_share(void *avframe);
+
+// ---- Frames in between ----------------------------------------------------------------------
+
+// Between two neighbouring pictures of a video, the one for the moment half-way: 25 pictures
+// a second become 50. A maker is opened for one size of picture.
+typedef struct bsv_between bsv_between;
+enum bsv_between_method {
+    BSV_BETWEEN_SYSTEM = 1, // the system's own: VideoToolbox, on Apple systems only
+    BSV_BETWEEN_NEURAL = 2, // RIFE
+};
+enum bsv_between_result {
+    BSV_BETWEEN_MADE = 1,
+    BSV_BETWEEN_NONE = 0,      // the two pictures are of different shots: nothing belongs between
+    BSV_BETWEEN_UNSUITED = -2, // not a kind of picture this maker takes (10-bit, full range, another size)
+    BSV_BETWEEN_FAILED = -1,
+};
+bsv_between *bsv_between_open(int method, int width, int height, char *error, int error_len);
+void bsv_between_close(bsv_between *m);
+// `*out` receives the new frame (for bsv_frame_free or a gpu) when the result is MADE. `*moved`
+// and `*relit` say how unlike the two pictures were found to be, which decides NONE.
+int bsv_between_make(bsv_between *m, void *avframe_a, void *avframe_b, void **out, float *moved, float *relit);
 
 // Sound comes out as interleaved 32-bit float at the rate and channel count asked for here.
 bsv_audio *bsv_audio_open(const bsv_source *s, int out_rate, int out_channels, char *error, int error_len);

@@ -257,6 +257,9 @@ struct SettingsState {
     quality: String,
     /// "off", "faithful", "restoring".
     upscaling: String,
+    /// "off", "fast", "neural"; and which of the last two this program can do at all.
+    interpolation: String,
+    interpolations: Vec<&'static str>,
     hardware_decoding: bool,
     dolby_vision: bool,
     subtitle_scale: f32,
@@ -333,6 +336,8 @@ struct SignalState {
     passthrough: bool,
     /// The picture on screen was doubled by the neural network before being fitted to the window.
     upscaled: bool,
+    /// Frames in between: "off", "on", "unsuited" (not for this video), "slow" (given up).
+    in_between: &'static str,
 }
 
 #[derive(Serialize)]
@@ -419,6 +424,15 @@ impl State {
             reported_peak,
             quality: prefs.quality.clone(),
             upscaling: prefs.upscaling.clone(),
+            interpolation: prefs.interpolation.clone(),
+            interpolations: [
+                ("fast", bsv_engine::Interpolation::System),
+                ("neural", bsv_engine::Interpolation::Neural),
+            ]
+            .into_iter()
+            .filter(|(_, method)| method.built())
+            .map(|(name, _)| name)
+            .collect(),
             hardware_decoding: prefs.hardware_decoding,
             dolby_vision: prefs.dolby_vision,
             subtitle_scale: prefs.subtitle_scale,
@@ -522,6 +536,12 @@ impl State {
                 output_peak: stats.output_nits.1,
                 passthrough: output.passthrough && transfer != Transfer::Sdr,
                 upscaled: stats.upscaled,
+                in_between: match status.in_between {
+                    playback::InBetween::Off => "off",
+                    playback::InBetween::On => "on",
+                    playback::InBetween::Unsuited => "unsuited",
+                    playback::InBetween::TooSlow => "slow",
+                },
             }),
             _ => None,
         };

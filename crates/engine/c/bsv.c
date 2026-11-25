@@ -46,6 +46,7 @@
 #include <libplacebo/utils/libav.h>
 
 #include "bsv.h"
+#include "between.h"
 
 // ---- Logging --------------------------------------------------------------------------------
 
@@ -1272,6 +1273,128 @@ void bsv_audio_flush(bsv_audio *a)
     // Dropping the converter also drops the samples it was holding from before the seek.
     swr_free(&a->swr);
     a->in_format = AV_SAMPLE_FMT_NONE;
+}
+
+// ---- Frames in between ----------------------------------------------------------------------
+
+struct bsv_between {
+    int method;
+    int width, height;
+    void *maker;
+};
+
+bsv_between *bsv_between_open(int method, int width, int height, char *error, int error_len)
+{
+    bsv_between *m = calloc(1, sizeof(*m));
+    if (!m)
+        return NULL;
+    m->method = method;
+    m->width = width;
+    m->height = height;
+    switch (method) {
+#if defined(__APPLE__)
+    case BSV_BETWEEN_SYSTEM:
+        m->maker = bsv_between_vt_open(width, height, error, error_len);
+        break;
+#endif
+    default:
+        set_error(error, error_len, "this way of making frames in between is not built for this system", 0);
+    }
+    if (!m->maker) {
+        free(m);
+        return NULL;
+    }
+    return m;
+}
+
+void bsv_between_close(bsv_between *m)
+{
+    if (!m)
+        return;
+#if defined(__APPLE__)
+    if (m->method == BSV_BETWEEN_SYSTEM)
+        bsv_between_vt_close(m->maker);
+#endif
+    free(m);
+}
+
+// How unlike two pictures are, from every eighth point of their brightness: the mean
+// difference (0 to 255), and how much of the picture sits at other levels than before (0 to
+// 1). Movement changes the first and hardly the second; another shot changes both.
+static void unlikeness(const AVFrame *a, const AVFrame *b, float *moved, float *relit)
+{
+    enum { STEP = 8, LEVELS = 32 };
+    long counts_a[LEVELS] = { 0 }, counts_b[LEVELS] = { 0 };
+    long long sum = 0;
+    long points = 0;
+    for (int y = STEP / 2; y < a->height; y += STEP) {
+        const uint8_t *row_a = a->data[0] + (ptrdiff_t) y * a->linesize[0];
+        const uint8_t *row_b = b->data[0] + (ptrdiff_t) y * b->linesize[0];
+        for (int x = STEP / 2; x < a->width; x += STEP) {
+            int pa = row_a[x], pb = row_b[x];
+            sum += abs(pa - pb);
+            counts_a[pa * LEVELS / 256]++;
+            counts_b[pb * LEVELS / 256]++;
+            points++;
+        }
+    }
+    long changed = 0;
+    for (int i = 0; i < LEVELS; i++)
+        changed += labs(counts_a[i] - counts_b[i]);
+    *moved = points ? (float) sum / points : 0;
+    *relit = points ? (float) changed / (2.0f * points) : 0;
+}
+
+int bsv_between_make(bsv_between *m, void *avframe_a, void *avframe_b, void **out, float *moved, float *relit)
+{
+    const AVFrame *a = avframe_a, *b = avframe_b;
+    *out = NULL;
+    *moved = *relit = 0;
+    bool known = (a->format == AV_PIX_FMT_NV12 || a->format == AV_PIX_FMT_YUV420P) && b->format == a->format;
+    if (!known || a->color_range == AVCOL_RANGE_JPEG || a->width != m->width || a->height != m->height
+        || b->width != m->width || b->height != m->height)
+        return BSV_BETWEEN_UNSUITED;
+
+    // Between the last picture of one shot and the first of the next there is nothing to
+    // make: every method draws the two melted into each other. The first picture is then
+    // simply held, as it is without any of this.
+    unlikeness(a, b, moved, relit);
+    // Measured on a film on 2026-11-25: across cuts the two figures were 22 to 59 and 0.17
+    // to 0.75; within the busiest shots (a screenful of text sliding by) 18 and 0.02. A cut
+    // taken for movement shows a melted picture; movement taken for a cut only holds one
+    // picture a moment longer, so the doubtful ones are called cuts.
+    bool cut = *relit > 0.30f || *moved > 28.0f || (*moved > 16.0f && *relit > 0.12f);
+    emitf(4, "between: moved %.1f, relit %.3f%s", *moved, *relit, cut ? " (a cut: nothing made)" : "");
+    if (cut)
+        return BSV_BETWEEN_NONE;
+
+    AVFrame *made = av_frame_alloc();
+    if (!made)
+        return BSV_BETWEEN_FAILED;
+    made->format = AV_PIX_FMT_NV12;
+    made->width = m->width;
+    made->height = m->height;
+    int ret = av_frame_get_buffer(made, 0);
+    if (ret >= 0)
+        ret = av_frame_copy_props(made, b);
+    if (ret >= 0) {
+        ret = -1;
+#if defined(__APPLE__)
+        if (m->method == BSV_BETWEEN_SYSTEM)
+            ret = bsv_between_vt_make(m->maker, a, b, made);
+#endif
+    }
+    if (ret < 0) {
+        av_frame_free(&made);
+        return BSV_BETWEEN_FAILED;
+    }
+    *out = made;
+    return BSV_BETWEEN_MADE;
+}
+
+void *bsv_frame_share(void *avframe)
+{
+    return av_frame_clone(avframe);
 }
 
 // ---- Rendering ------------------------------------------------------------------------------

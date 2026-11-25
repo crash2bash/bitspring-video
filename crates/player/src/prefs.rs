@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use bsv_display::policy::HdrMode;
-use bsv_engine::{Quality, Upscaler};
+use bsv_engine::{Interpolation, Quality, Upscaler};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -18,6 +18,9 @@ pub struct Preferences {
     /// "off", "faithful", "restoring": a neural network doubles a picture smaller than the
     /// window before it is fitted there; the second also takes away what compression left.
     pub upscaling: String,
+    /// "off", "fast", "neural": a frame is made between every two of a video at up to 30
+    /// pictures a second, by the system or by a neural network.
+    pub interpolation: String,
     pub hardware_decoding: bool,
     /// For a file that is both Dolby Vision and a plain signal (HDR10 for profile 8.1): play
     /// the Dolby Vision version. `false`: play the plain one.
@@ -46,6 +49,7 @@ impl Default for Preferences {
             display_peak: None,
             quality: "high".into(),
             upscaling: "off".into(),
+            interpolation: "off".into(),
             hardware_decoding: true,
             dolby_vision: true,
             subtitle_scale: 1.0,
@@ -110,6 +114,9 @@ impl Preferences {
         if !["off", "faithful", "restoring"].contains(&self.upscaling.as_str()) {
             self.upscaling = "off".into();
         }
+        if !["off", "fast", "neural"].contains(&self.interpolation.as_str()) {
+            self.interpolation = "off".into();
+        }
         let within = |v: f32, (low, high): (f32, f32), fallback: f32| {
             if v.is_finite() {
                 v.clamp(low, high)
@@ -136,6 +143,7 @@ impl Preferences {
             "displayPeak" => self.display_peak = number,
             "quality" => self.quality = value.trim().to_string(),
             "upscaling" => self.upscaling = value.trim().to_string(),
+            "interpolation" => self.interpolation = value.trim().to_string(),
             "hardwareDecoding" => self.hardware_decoding = matches!(value.trim(), "1" | "true"),
             "dolbyVision" => self.dolby_vision = matches!(value.trim(), "1" | "true"),
             "subtitleScale" => self.subtitle_scale = number.unwrap_or(1.0),
@@ -180,6 +188,14 @@ impl Preferences {
         match self.upscaling.as_str() {
             "faithful" => Some(Upscaler::Faithful),
             "restoring" => Some(Upscaler::Restoring),
+            _ => None,
+        }
+    }
+
+    pub fn interpolation(&self) -> Option<Interpolation> {
+        match self.interpolation.as_str() {
+            "fast" => Some(Interpolation::System),
+            "neural" => Some(Interpolation::Neural),
             _ => None,
         }
     }

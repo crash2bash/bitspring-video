@@ -236,6 +236,8 @@ internal sealed class SignalInfo
     public bool Passthrough;
     /// <summary>The picture on screen was doubled by the neural network before being fitted to the window.</summary>
     public bool Upscaled;
+    /// <summary>Frames in between: "off", "on", "unsuited" (not for this video), "slow" (given up).</summary>
+    public string InBetween = "off";
 }
 
 internal sealed class SoundInfo
@@ -281,6 +283,9 @@ internal sealed class SettingsInfo
     public string Quality = "high";
     /// <summary>"off", "faithful", "restoring": a neural network doubles pictures smaller than the window.</summary>
     public string Upscaling = "off";
+    /// <summary>"off", "fast", "neural": a frame is made between every two; and which this build can do.</summary>
+    public string Interpolation = "off";
+    public List<string> Interpolations = new();
     public bool HardwareDecoding = true;
     /// <summary>A file that is both Dolby Vision and a plain signal is played as Dolby Vision.</summary>
     public bool DolbyVision = true;

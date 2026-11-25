@@ -305,6 +305,7 @@ impl Host {
             quality: self.prefs.render_quality(),
             upscaler: self.prefs.upscaler(),
             shader_cache: Some(Preferences::shader_cache(&self.preferences_path)),
+            interpolation: self.prefs.interpolation(),
             renderer_options: String::new(),
             start: recalled.start.unwrap_or(0.0),
             sound: self.sound,
@@ -354,6 +355,9 @@ impl Host {
             "displayPeak" => self.send(Command::Display(Box::new(self.shown_display()))),
             "quality" => self.send(Command::SetQuality(self.prefs.render_quality())),
             "upscaling" => self.send(Command::SetUpscaler(self.prefs.upscaler())),
+            "interpolation" => {
+                self.send(Command::SetInterpolation(self.prefs.interpolation()));
+            }
             "dolbyVision" => self.send(Command::SetDolbyVision(self.prefs.dolby_vision)),
             "subtitleScale" | "subtitleNits" => self.send(Command::SubtitleLook {
                 scale: self.prefs.subtitle_scale,

@@ -531,6 +531,29 @@ private struct SignalPanel: View {
         }
     }
 
+    /// What is being done about frames in between, when anything was asked.
+    private func motionRow(fps: Double) -> String? {
+        let neural = status.settings.interpolation == "neural"
+        switch status.signal?.inBetween {
+        case "on":
+            let doubled = fps > 0 ? ", " + trimmed(fps * 2) + L(" fps", " кадр/с") : ""
+            return neural
+                ? L("Frames added in between by a neural network (RIFE)", "Промежуточные кадры от нейросети (RIFE)") + doubled
+                : L("Frames added in between by the system", "Промежуточные кадры от системы") + doubled
+        case "unsuited":
+            return neural
+                ? L("No frames in between: only for 8-bit video at up to 30 fps",
+                    "Промежуточных кадров нет: только для 8-битного видео до 30 кадр/с")
+                : L("No frames in between: only for 8-bit video up to 1080p and 30 fps",
+                    "Промежуточных кадров нет: только для 8-битного видео до 1080p и 30 кадр/с")
+        case "slow":
+            return L("Frames in between given up: this Mac cannot make them in time",
+                     "Промежуточные кадры отключены: этот Mac не успевает их делать")
+        default:
+            return nil
+        }
+    }
+
     private var rows: [(String, String)] {
         var out: [(String, String)] = []
         if let v = status.video {
@@ -560,6 +583,9 @@ private struct SignalPanel: View {
                 out.append((
                     L("Scaling", "Масштаб"),
                     L("Doubled to \(size) by a neural network (ArtCNN)", "Удвоено до \(size) нейросетью (ArtCNN)")))
+            }
+            if let motion = motionRow(fps: v.fps) {
+                out.append((L("Motion", "Движение"), motion))
             }
         }
         if let s = status.signal {

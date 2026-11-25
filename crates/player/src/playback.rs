@@ -14,7 +14,7 @@
 
 use std::collections::VecDeque;
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{
     Receiver, Sender, SyncSender, TryRecvError, TrySendError, channel, sync_channel,
 };
@@ -29,9 +29,9 @@ use bsv_display::policy::{HdrMode, Output, plan};
 use crate::language;
 use crate::sidecars::{self, Sidecar};
 use bsv_engine::{
-    AudioDecoder, AudioInfo, Decoded, Frame, Gpu, MediaInfo, Packet, Pull, Quality, Read,
-    RenderStats, RenderStatus, Source, SubtitleDecoder, SubtitleEvent, SubtitleKind, Track,
-    TrackKind, Upscaler, VideoDecoder,
+    AudioDecoder, AudioInfo, Between, Decoded, Frame, Gpu, Interpolation, Interpolator, MediaInfo,
+    Packet, Pull, Quality, Read, RenderStats, RenderStatus, Source, SubtitleDecoder, SubtitleEvent,
+    SubtitleKind, Track, TrackKind, Upscaler, VideoDecoder,
 };
 
 /// Decoded frames waiting for the renderer. A 4K 10-bit frame is about 25 MB.
@@ -60,6 +60,8 @@ pub struct Options {
     pub upscaler: Option<Upscaler>,
     /// The file compiled shaders are kept in between runs, if any.
     pub shader_cache: Option<std::path::PathBuf>,
+    /// How frames in between are made (25 pictures a second become 50), when they are.
+    pub interpolation: Option<Interpolation>,
     /// Extra libplacebo options, "key=value,key=value".
     pub renderer_options: String,
     /// Where to begin, in seconds.
@@ -121,6 +123,7 @@ pub enum Command {
     },
     SetQuality(Quality),
     SetUpscaler(Option<Upscaler>),
+    SetInterpolation(Option<Interpolation>),
     /// Play a Dolby Vision file as Dolby Vision, or as the plain signal its base layer is.
     SetDolbyVision(bool),
     /// Seconds to hold the picture back against the sound.
@@ -160,6 +163,12 @@ pub struct Status {
     pub muted: bool,
     /// Gaps in the sound since the start: the device wanted samples that were not ready.
     pub underruns: u64,
+    /// Whether frames in between are being made for this video, and what one takes to make,
+    /// in milliseconds.
+    pub in_between: InBetween,
+    pub in_between_ms: f32,
+    /// Pictures drawn during the last second: the video's own and those made in between.
+    pub pictures: u32,
     /// What drawing a picture takes on the GPU, in milliseconds: the longest of the last second.
     pub picture_gpu_ms: f32,
     /// Refreshes of the display that came and went while a picture was still being drawn,
@@ -350,10 +359,32 @@ impl Timeline {
 
 // ---- Between the threads --------------------------------------------------------------------
 
+/// What has come of asking for frames in between, for the video that is open.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum InBetween {
+    /// Not asked for.
+    #[default]
+    Off = 0,
+    /// Every pair of neighbouring pictures of one shot gets a third between them.
+    On = 1,
+    /// This video is not of a kind the chosen method takes: too large, more than 8 bits,
+    /// or already at more than 30 pictures a second.
+    Unsuited = 2,
+    /// Making one took longer than this machine has between two pictures: given up, so that
+    /// the video itself keeps its pace.
+    TooSlow = 3,
+}
+
 /// State every thread reads: which seek is current, and whether to stop.
 struct Shared {
     generation: AtomicU64,
     quit: AtomicBool,
+    /// The method asked for (an [`Interpolation`] as a number, 0 for none): the render thread
+    /// sets it, the video thread follows.
+    interpolation: AtomicU8,
+    /// What the video thread made of it: an [`InBetween`], and milliseconds as `f32` bits.
+    in_between: AtomicU8,
+    in_between_ms: AtomicU32,
 }
 
 impl Shared {
@@ -1205,6 +1236,148 @@ fn read_loop(mut source: Source, reading: Reading) {
 
 // ---- The video thread -----------------------------------------------------------------------
 
+/// Videos at up to this many pictures a second get frames in between; faster ones have them.
+const SMOOTH_UP_TO: f64 = 31.0;
+/// A maker that takes more than this share of the time between two pictures is given up on.
+const SMOOTH_SHARE: f64 = 0.8;
+
+/// Makes the frame between each picture and the one before it, while the setting asks for
+/// that and this video and this machine allow it.
+#[derive(Default)]
+struct Smoother {
+    /// The setting the rest was decided for.
+    asked: u8,
+    /// A maker being opened on a thread of its own: the system loads its models then, most
+    /// of a second, and the video goes on as it is meanwhile.
+    opening: Option<Receiver<Result<Interpolator, bsv_engine::Error>>>,
+    maker: Option<Interpolator>,
+    state: InBetween,
+    /// The picture before, kept for as long as there is a maker.
+    previous: Option<Frame>,
+    /// What making one takes, in milliseconds, evened out; and how many went into it.
+    took: f64,
+    made: u32,
+}
+
+impl Smoother {
+    fn settle(&mut self, state: InBetween, why: &str, shared: &Shared) {
+        if !why.is_empty() {
+            eprintln!("[info] no frames in between: {why}");
+        }
+        self.maker = None;
+        self.previous = None;
+        self.state = state;
+        shared.in_between.store(state as u8, Ordering::Relaxed);
+    }
+
+    /// The frame that belongs before `frame`, half-way from the picture before it, if one is
+    /// to be shown. Call once for every picture, in order.
+    fn between(&mut self, frame: &Frame, size: (u32, u32), shared: &Shared) -> Option<Frame> {
+        let asked = shared.interpolation.load(Ordering::Relaxed);
+        if asked != self.asked {
+            self.asked = asked;
+            self.took = 0.0;
+            self.made = 0;
+            self.settle(InBetween::Off, "", shared);
+            let method = match asked {
+                1 => Some(Interpolation::System),
+                2 => Some(Interpolation::Neural),
+                _ => None,
+            };
+            self.opening = method.map(|method| {
+                let (opened, opening) = channel();
+                let _ = thread::Builder::new()
+                    .name("in-between".into())
+                    .spawn(move || {
+                        let _ = opened.send(Interpolator::open(method, size.0, size.1));
+                    });
+                opening
+            });
+        }
+        if let Some(opening) = &self.opening {
+            match opening.try_recv() {
+                Ok(Ok(maker)) => {
+                    self.opening = None;
+                    self.maker = Some(maker);
+                    self.state = InBetween::On;
+                    shared
+                        .in_between
+                        .store(InBetween::On as u8, Ordering::Relaxed);
+                }
+                Ok(Err(e)) => {
+                    self.opening = None;
+                    self.settle(InBetween::Unsuited, &e.to_string(), shared);
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => self.opening = None,
+            }
+        }
+        let maker = self.maker.as_mut()?;
+        let middle = match self.previous.take() {
+            Some(before) => {
+                let gap = frame.pts - before.pts;
+                if gap > 0.0 && gap < 1.0 / SMOOTH_UP_TO {
+                    self.settle(
+                        InBetween::Unsuited,
+                        "the video has more than 30 pictures a second",
+                        shared,
+                    );
+                    return None;
+                }
+                // A gap in the times is a gap in the pictures: nothing is made across it.
+                if gap <= 0.0 || gap > 0.2 {
+                    None
+                } else {
+                    let started = Instant::now();
+                    match maker.between(&before, frame) {
+                        Ok(Between::Made(middle)) => {
+                            let took = started.elapsed().as_secs_f64() * 1000.0;
+                            // The first ones carry the maker's warming up.
+                            self.made += 1;
+                            if self.made > 2 {
+                                self.took = if self.made == 3 {
+                                    took
+                                } else {
+                                    self.took * 0.9 + took * 0.1
+                                };
+                                shared
+                                    .in_between_ms
+                                    .store((self.took as f32).to_bits(), Ordering::Relaxed);
+                            }
+                            if self.made > 14 && self.took > gap * 1000.0 * SMOOTH_SHARE {
+                                let why = format!(
+                                    "one takes {:.0} ms here, and the video leaves {:.0} ms between two pictures",
+                                    self.took,
+                                    gap * 1000.0
+                                );
+                                self.settle(InBetween::TooSlow, &why, shared);
+                                return Some(middle);
+                            }
+                            Some(middle)
+                        }
+                        Ok(Between::Cut) => None,
+                        Ok(Between::Unsuited) => {
+                            self.settle(
+                                InBetween::Unsuited,
+                                "this kind of picture is not taken",
+                                shared,
+                            );
+                            return None;
+                        }
+                        Err(e) => {
+                            self.settle(InBetween::Unsuited, &e.to_string(), shared);
+                            return None;
+                        }
+                    }
+                }
+            }
+            None => None,
+        };
+        self.previous = frame.share();
+        middle
+    }
+}
+
 fn video_loop(
     mut decoder: VideoDecoder,
     packets: Arc<PacketQueue>,
@@ -1215,6 +1388,7 @@ fn video_loop(
     let mut skip_before = 0.0f64;
     let mut info_sent = false;
     let mut on_hardware = false;
+    let mut smoother = Smoother::default();
 
     // Hand a message over, giving up if a seek or quit makes it stale while the queue is full.
     // Returns `false` only when the renderer is gone.
@@ -1244,6 +1418,8 @@ fn video_loop(
                 decoder.flush(to);
                 generation = g;
                 skip_before = to;
+                // The picture after a jump is no neighbour of the one before it.
+                smoother.previous = None;
                 continue;
             }
             Item::Failed(e) => {
@@ -1269,6 +1445,19 @@ fn video_loop(
                     // After a seek the decoder starts at a keyframe before the target.
                     if frame.pts + frame.duration <= skip_before {
                         continue;
+                    }
+                    let info = decoder.info();
+                    if let Some(middle) =
+                        smoother.between(&frame, (info.width, info.height), &shared)
+                        && !deliver(
+                            FromVideo::Frame {
+                                generation,
+                                frame: middle,
+                            },
+                            generation,
+                        )
+                    {
+                        return;
                     }
                     if !deliver(FromVideo::Frame { generation, frame }, generation) {
                         return;
@@ -1435,6 +1624,9 @@ fn render_loop(
     let shared = Arc::new(Shared {
         generation: AtomicU64::new(0),
         quit: AtomicBool::new(false),
+        interpolation: AtomicU8::new(options.interpolation.map_or(0, |i| i as u8)),
+        in_between: AtomicU8::new(0),
+        in_between_ms: AtomicU32::new(0),
     });
     let packets = Arc::new(PacketQueue::new());
     let (reader_commands, reader_rx) = channel();
@@ -1496,6 +1688,7 @@ fn render_loop(
     let mut stats = RenderStats::default();
     // How the GPU is keeping up: see `Status::picture_gpu_ms` and `Status::late`.
     let mut gpu_peak = (Instant::now(), 0f32, 0f32);
+    let mut pictures = (0u32, 0u32);
     let mut late = 0u64;
     let mut failures = 0u32;
     // The time the last picture was drawn for.
@@ -1607,6 +1800,11 @@ fn render_loop(
                     if let Err(e) = gpu.set_options(quality, &options.renderer_options) {
                         eprintln!("[warn] {e}");
                     }
+                }
+                Ok(Command::SetInterpolation(method)) => {
+                    shared
+                        .interpolation
+                        .store(method.map_or(0, |i| i as u8), Ordering::Relaxed);
                 }
                 Ok(Command::SetUpscaler(upscaler)) => {
                     if let Err(e) = gpu.set_upscaler(upscaler) {
@@ -1837,9 +2035,11 @@ fn render_loop(
                 }
                 if s.new_picture {
                     gpu_peak.2 = gpu_peak.2.max(s.gpu_ms);
+                    pictures.1 += 1;
                 }
                 if gpu_peak.0.elapsed() >= Duration::from_secs(1) {
                     gpu_peak = (Instant::now(), gpu_peak.2, 0.0);
+                    pictures = (pictures.1, 0);
                     // Not left for the end of the file: Direct3D takes twenty seconds over
                     // the upscaler's shaders, and a player closed in a hurry would take them
                     // again the next time.
@@ -1902,6 +2102,14 @@ fn render_loop(
             .sound
             .as_ref()
             .map_or(0, |(clock, _)| clock.underruns());
+        s.in_between = match shared.in_between.load(Ordering::Relaxed) {
+            1 => InBetween::On,
+            2 => InBetween::Unsuited,
+            3 => InBetween::TooSlow,
+            _ => InBetween::Off,
+        };
+        s.in_between_ms = f32::from_bits(shared.in_between_ms.load(Ordering::Relaxed));
+        s.pictures = pictures.0;
         s.picture_gpu_ms = gpu_peak.1;
         s.late = late;
         if s.info.as_ref() != Some(&info) {
@@ -1948,6 +2156,7 @@ mod tests {
             quality: Quality::High,
             upscaler: None,
             shader_cache: None,
+            interpolation: None,
             renderer_options: String::new(),
             start: 0.0,
             sound: true,

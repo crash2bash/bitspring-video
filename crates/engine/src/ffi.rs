@@ -19,6 +19,11 @@ pub struct bsv_audio {
 }
 
 #[repr(C)]
+pub struct bsv_between {
+    _opaque: [u8; 0],
+}
+
+#[repr(C)]
 #[derive(Default)]
 pub struct bsv_audio_info {
     pub codec: [c_char; 32],
@@ -209,6 +214,23 @@ unsafe extern "C" {
     pub fn bsv_video_receive(v: *mut bsv_video, out: *mut bsv_frame) -> c_int;
     pub fn bsv_video_flush(v: *mut bsv_video, seconds: c_double);
     pub fn bsv_frame_free(avframe: *mut c_void);
+    pub fn bsv_frame_share(avframe: *mut c_void) -> *mut c_void;
+    pub fn bsv_between_open(
+        method: c_int,
+        width: c_int,
+        height: c_int,
+        error: *mut c_char,
+        error_len: c_int,
+    ) -> *mut bsv_between;
+    pub fn bsv_between_close(m: *mut bsv_between);
+    pub fn bsv_between_make(
+        m: *mut bsv_between,
+        a: *mut c_void,
+        b: *mut c_void,
+        out: *mut *mut c_void,
+        moved: *mut c_float,
+        relit: *mut c_float,
+    ) -> c_int;
 
     pub fn bsv_audio_open(
         s: *const bsv_source,

@@ -192,6 +192,17 @@ pub fn advice(a: &Advice) -> String {
     }
 }
 
+/// What to add to the clock's line about frames in between.
+pub fn in_between(state: crate::playback::InBetween, ms: f32) -> String {
+    use crate::playback::InBetween;
+    match state {
+        InBetween::Off => String::new(),
+        InBetween::On => format!(", a frame in between takes {ms:.1} ms"),
+        InBetween::Unsuited => ", no frames in between for this video".into(),
+        InBetween::TooSlow => ", frames in between given up as too slow".into(),
+    }
+}
+
 /// One line for what is happening right now, from the file to the screen.
 pub fn signal_path(
     info: &MediaInfo,

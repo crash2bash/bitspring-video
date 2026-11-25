@@ -48,6 +48,10 @@ Early. What works today, on the Mac:
   switched on in settings: a picture smaller than the window is doubled before it is fitted
   there, either as it is or with what compression left taken away. The signal panel says when
   it is at work. Tried on SDR and HDR10 at 1080p
+- Frames in between, off until switched on in settings: a video at up to 30 pictures a second
+  gets one made between every two (25 become 50), by the system (VideoToolbox) on the Mac,
+  for 8-bit pictures up to 1920x1080. Nothing is made across a cut, and it is given up for
+  a video the machine cannot make them in time for. The signal panel says which
 - Pause, seeking, volume, full screen; the display and the machine stay awake while a film
   plays, and are let go on pause
 - A film is picked up where it was left, with the sound and subtitle tracks chosen for it; a

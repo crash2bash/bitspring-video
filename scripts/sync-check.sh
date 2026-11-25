@@ -19,6 +19,13 @@
 # to have work to do (add --script "1:set upscaling faithful"), which is how to see that the
 # picture still meets its sound with the network drawing every one of them.
 #
+# With DEPTH=8 the clip is 8-bit H.264 instead of 10-bit HEVC: the kind of picture frames in
+# between are made for (add --script "1:set interpolation fast").
+#
+# On a Bluetooth sound device the figures come out early by what the device says it delays
+# (about 160 ms on AirPods): the player holds the picture back by that much, and the sound is
+# recorded before it leaves for the device. Compare runs on such a device with each other only.
+#
 # The player runs at a volume too low to hear. The terminal needs the Screen Recording
 # permission. Build the app first: scripts/bundle-macos.sh
 set -euo pipefail
@@ -31,19 +38,25 @@ WORK="$PWD/target/sync-check"
 mkdir -p "$WORK"
 
 SIZE="${SIZE:-3840x2160}"
-if [ "$SIZE" != 3840x2160 ]; then
-  WORK="$WORK/$SIZE"
+DEPTH="${DEPTH:-10}"
+if [ "$SIZE" != 3840x2160 ] || [ "$DEPTH" != 10 ]; then
+  WORK="$WORK/$SIZE-$DEPTH"
   mkdir -p "$WORK"
+fi
+if [ "$DEPTH" = 8 ]; then
+  PICTURE=(-c:v libx264 -preset ultrafast -pix_fmt yuv420p -bf 2 -g 48)
+else
+  PICTURE=(-c:v libx265 -preset ultrafast -x265-params "bframes=4:keyint=48:log-level=error" -tag:v hvc1)
 fi
 if [ ! -f "$WORK/sync.mkv" ]; then
   echo "Making the clip"
   BEEP="0.05*sin(2*PI*1000*t)*lt(mod(t\,1.001)\,0.03)"
   ffmpeg -hide_banner -loglevel error -y \
-    -f lavfi -i "color=c=black:s=$SIZE:r=24000/1001:d=90,drawbox=x=0:y=0:w=iw:h=ih:color=white:t=fill:enable='eq(mod(n\,24)\,0)',format=yuv420p10le" \
+    -f lavfi -i "color=c=black:s=$SIZE:r=24000/1001:d=90,drawbox=x=0:y=0:w=iw:h=ih:color=white:t=fill:enable='eq(mod(n\,24)\,0)',format=$([ "$DEPTH" = 8 ] && echo yuv420p || echo yuv420p10le)" \
     -f lavfi -i "aevalsrc=exprs='$BEEP|$BEEP|$BEEP|0|0|0':c=5.1:s=48000:d=90" \
     -f lavfi -i "aevalsrc=exprs='$BEEP|$BEEP':c=stereo:s=48000:d=90" \
     -map 0:v -map 1:a -map 2:a \
-    -c:v libx265 -preset ultrafast -x265-params "bframes=4:keyint=48:log-level=error" -tag:v hvc1 \
+    "${PICTURE[@]}" \
     -c:a:0 eac3 -b:a:0 640k -c:a:1 ac3 -b:a:1 192k \
     -metadata:s:a:0 language=eng -metadata:s:a:1 language=rus "$WORK/sync.mkv"
 fi

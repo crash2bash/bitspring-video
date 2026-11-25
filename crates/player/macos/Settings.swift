@@ -98,6 +98,24 @@ private struct SettingsPanel: View {
                     .font(.system(size: 11))
                     .foregroundStyle(Color.quiet)
                     .fixedSize(horizontal: false, vertical: true)
+                if !settings.interpolations.isEmpty {
+                    row(L("Motion", "Плавность")) {
+                        Choice(
+                            options: [("off", L("Off", "Выкл"))]
+                                + settings.interpolations.map {
+                                    ($0, $0 == "fast" ? L("Fast", "Быстрая") : L("Neural", "Нейросеть"))
+                                },
+                            selected: settings.interpolation,
+                            onSelect: { model.set("interpolation", $0) })
+                            .frame(width: 236)
+                    }
+                    Text(L(
+                        "A frame is made between every two: 25 pictures a second become 50. For videos at up to 30 a second.",
+                        "Между каждыми двумя кадрами добавляется промежуточный: 25 кадров в секунду становятся 50. Для видео до 30 кадр/с."))
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.quiet)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 row(
                     L("The Mac's video decoder", "Аппаратный декодер"),
                     note: L("From the next file", "Со следующего файла")
