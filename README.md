@@ -56,6 +56,18 @@ Early. What works today, on the Mac:
   a video the machine cannot make them in time for. The signal panel says which
 - Pause, seeking, volume, full screen; the display and the machine stay awake while a film
   plays, and are let go on pause
+- Chapters: the seek bar is cut where each begins, the bubble over it names the chapter under
+  the pointer, a menu lists them with their times, and a key goes to the next or the previous.
+  A file that marks only its credits gets the film before them as a first, nameless chapter.
+  Tried on Blu-ray rips (Avant Title, Opening, A Part ...) and streaming-service files (Recap,
+  Intro, End Credits)
+- The system's media keys: the play key, the next and previous track keys, headphone taps and
+  the system's own media controls (Control Center on the Mac, the media overlay on Windows),
+  which also show what is playing and its chapter. In a film a track is a chapter: "next"
+  goes to the next chapter and, after the last, to the next episode; "previous" goes back to
+  the start of the chapter, or to the one before when it has only just begun. The keys
+  themselves have not been pressed in a test yet, on either system; what they do has been
+  tried through the commands they send
 - A film is picked up where it was left, with the sound and subtitle tracks chosen for it; a
   note offers its beginning instead. A film watched to its credits starts from the beginning
 - Series: opening one video gathers the other videos of its folder around it, in the order a
@@ -183,8 +195,9 @@ bitspring-video --hdr passthrough <file>
 bitspring-video --audio-delay 80 <file>     the TV or receiver delays sound by 80 ms
 ```
 
-Keys: Space pauses, Left / Right seek 5 seconds (with Shift, a minute), Up / Down change the
-volume, M mutes, S steps through the subtitle tracks, A through the sound tracks, N and P go to
+Keys: Space pauses, Left / Right seek 5 seconds (with Shift, a minute; with Option on the
+Mac and Ctrl on Windows, a chapter), Page Down / Page Up go to the next and the previous
+chapter, Up / Down change the volume, M mutes, S steps through the subtitle tracks, A through the sound tracks, N and P go to
 the next and the previous file of the folder or the playlist, L opens the list, F or a
 double-click for full screen, I opens the signal panel, Cmd+comma the settings, Cmd+O a file. The controls hide after a few seconds of playback and return when the pointer moves.
 
@@ -200,7 +213,8 @@ whole, was left on. `--start <seconds>` begins there whatever is remembered.
 
 For testing without a keyboard, `--script "2:pause,4:pause,5:seek+10,9:quit"` runs commands at
 given times (`pin` keeps the controls up, `panel` opens the signal panel, `queue` the list;
-`next`, `previous`, `play 2`, `add <file>`, `save <list>` work the list), and `--verbose` prints
+`next`, `previous`, `play 2`, `add <file>`, `save <list>` work the list; any command the
+interface sends, such as `chapter-next` or `skip-previous`, works too), and `--verbose` prints
 the playback clock once a second.
 
 HDR modes:

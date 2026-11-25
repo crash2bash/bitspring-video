@@ -175,6 +175,12 @@ fn print_info(path: &str, args: &Args) -> Result<(), String> {
     }
     let info = decoder.info();
     println!("Video:   {}", report::media(&info));
+    for (n, chapter) in bitspring_video::chapters::tidy(source.chapters(), info.duration)
+        .iter()
+        .enumerate()
+    {
+        println!("Chapter {}: {}", n + 1, report::chapter(chapter));
+    }
     let displays = bsv_display::displays().map_err(|e| e.to_string())?;
     for d in &displays {
         let output = plan(d, &info.source(), args.mode.unwrap_or_default());

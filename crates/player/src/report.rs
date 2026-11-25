@@ -340,3 +340,14 @@ pub fn track(track: &Track) -> String {
     }
     text
 }
+
+/// "0:01:30  Opening": where a chapter begins, and its title when it has one.
+pub fn chapter(chapter: &bsv_engine::Chapter) -> String {
+    let seconds = chapter.start.max(0.0).round() as u64;
+    let at = format!("{}:{:02}:{:02}", seconds / 3600, seconds / 60 % 60, seconds % 60);
+    if chapter.title.is_empty() {
+        at
+    } else {
+        format!("{at}  {}", chapter.title)
+    }
+}

@@ -9,6 +9,8 @@ using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Shapes;
 using Windows.ApplicationModel.DataTransfer;
 using Windows.Graphics;
+using Windows.Media;
+using Windows.Media.Playback;
 using Windows.Storage.Pickers;
 using Windows.System;
 using Windows.UI;
@@ -93,6 +95,7 @@ public sealed partial class MainWindow : Window
         Tip(SignalButton, L("How the picture is being shown", "Как показывается картинка"));
         Tip(SettingsButton, L("Settings", "Настройки"));
         Tip(DurationButton, L("Switch between length and time left", "Длительность или оставшееся время"));
+        Tip(ChaptersButton, L("Chapters (Page Up, Page Down)", "Главы (Page Up, Page Down)"));
         Tip(SubtitlesButton, L("Subtitles", "Субтитры"));
         Tip(SoundButton, L("Sound track", "Звуковая дорожка"));
 
@@ -104,7 +107,8 @@ public sealed partial class MainWindow : Window
             PlayButton.Resources[key] = new SolidColorBrush(Slate);
         foreach (var key in new[] { "SliderTrackValueFill", "SliderTrackValueFillPointerOver", "SliderTrackValueFillPressed" })
             Seek.Resources[key] = live;
-        Seek.ThumbToolTipValueConverter = new ClockConverter(() => state.Duration);
+        Seek.ThumbToolTipValueConverter = new ClockConverter(() => state);
+        ChapterMarks.SizeChanged += (_, _) => DrawChapterMarks(state);
         // A slider keeps pointer events to itself; ask for them anyway to know when a drag ends.
         Seek.AddHandler(UIElement.PointerPressedEvent, new PointerEventHandler((_, _) => seeking = true), true);
         Seek.AddHandler(UIElement.PointerReleasedEvent, new PointerEventHandler((_, _) => EndSeek()), true);
@@ -128,7 +132,10 @@ public sealed partial class MainWindow : Window
         var soundMenu = new MenuFlyout();
         soundMenu.Opening += (_, _) => FillSoundMenu(soundMenu);
         SoundButton.Flyout = soundMenu;
-        foreach (var flyout in new FlyoutBase[] { signalFlyout, settingsFlyout, queueFlyout, subtitlesMenu, soundMenu })
+        var chaptersMenu = new MenuFlyout();
+        chaptersMenu.Opening += (_, _) => FillChaptersMenu(chaptersMenu);
+        ChaptersButton.Flyout = chaptersMenu;
+        foreach (var flyout in new FlyoutBase[] { signalFlyout, settingsFlyout, queueFlyout, subtitlesMenu, soundMenu, chaptersMenu })
         {
             flyout.Opened += (_, _) => flyoutsOpen++;
             flyout.Closed += (_, _) => flyoutsOpen = Math.Max(0, flyoutsOpen - 1);
@@ -143,6 +150,7 @@ public sealed partial class MainWindow : Window
         Chrome.OpacityTransition = new ScalarTransition { Duration = TimeSpan.FromMilliseconds(300) };
         SettingsPill.OpacityTransition = new ScalarTransition { Duration = TimeSpan.FromMilliseconds(300) };
 
+        SetUpMediaKeys();
         Video.SizeChanged += (_, _) => ResizeVideo();
         Video.CompositionScaleChanged += (_, _) => ResizeVideo();
         AddKeys();
@@ -153,6 +161,7 @@ public sealed partial class MainWindow : Window
         {
             closed = true;
             tick.Stop();
+            mediaKeysOwner?.Dispose();
             player.Dispose();
         };
 
@@ -262,6 +271,7 @@ public sealed partial class MainWindow : Window
     private void Apply(PlayerState s)
     {
         KeepAwake(s.IsPlaying);
+        UpdateMediaKeys(s);
         var open = s.File != null;
         Empty.Visibility = open ? Visibility.Collapsed : Visibility.Visible;
         Chrome.Visibility = open ? Visibility.Visible : Visibility.Collapsed;
@@ -320,6 +330,8 @@ public sealed partial class MainWindow : Window
         MuteGlyph.Glyph = s.Muted || s.Volume <= 0.001 ? "" : "";
         Tip(MuteButton, s.Muted ? L("Unmute", "Включить звук") : L("Mute", "Без звука"));
 
+        ChaptersButton.Visibility = s.Chapters.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        DrawChapterMarks(s);
         SubtitlesButton.Visibility = s.SubtitleTracks.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         SubtitlesGlyph.Foreground = s.SubtitleTrack == null ? Resource("QuietBrush") : Resource("PorcelainBrush");
         // More than one track to choose from, or one that is not playing (a sound file beside
@@ -500,6 +512,11 @@ public sealed partial class MainWindow : Window
         Key(VirtualKey.M, () => player.Send("toggle-mute"));
         Key(VirtualKey.S, NextSubtitles);
         Key(VirtualKey.A, NextSound);
+        Key(VirtualKey.PageDown, () => player.Send("chapter-next"));
+        Key(VirtualKey.PageUp, () => player.Send("chapter-previous"));
+        // Ctrl with an arrow, as it jumps a word in text, jumps a chapter here.
+        Key(VirtualKey.Right, () => player.Send("chapter-next"), VirtualKeyModifiers.Control);
+        Key(VirtualKey.Left, () => player.Send("chapter-previous"), VirtualKeyModifiers.Control);
         Key(VirtualKey.N, () => player.Send("next"));
         Key(VirtualKey.P, () => player.Send("previous"));
         Key(VirtualKey.L, () => { if (state.Queue != null) queueFlyout.ShowAt(QueueButton); });
@@ -546,6 +563,138 @@ public sealed partial class MainWindow : Window
             menu.Items.Add(Choice(SoundLabel(track), "sound", state.AudioTrack == track.Id, $"audio-track {track.Id}"));
     }
 
+    /// <summary>Each chapter by its name, with where it begins on the right; the one playing ticked.</summary>
+    private void FillChaptersMenu(MenuFlyout menu)
+    {
+        menu.Items.Clear();
+        for (var n = 0; n < state.Chapters.Count; n++)
+        {
+            var item = Choice(ChapterName(state, n), "chapters", state.Chapter == n, "seek-to " + Number(state.Chapters[n].Start));
+            item.KeyboardAcceleratorTextOverride = Clock(state.Chapters[n].Start);
+            menu.Items.Add(item);
+        }
+    }
+
+    // ---- Chapters on the seek bar --------------------------------------------------------------
+
+    private string chapterMarksDrawn = "";
+
+    /// <summary>A cut across the seek bar where each chapter after the first begins.</summary>
+    private void DrawChapterMarks(PlayerState s)
+    {
+        var width = ChapterMarks.ActualWidth;
+        var key = $"{width}|{s.Duration}|" + string.Join("|", s.Chapters.Select(c => Number(c.Start)));
+        if (key == chapterMarksDrawn) return;
+        chapterMarksDrawn = key;
+        ChapterMarks.Children.Clear();
+        if (s.Duration <= 0 || width <= 0) return;
+        // The thumb's centre travels between half its width from either end.
+        var thumb = Application.Current.Resources.TryGetValue("SliderHorizontalThumbWidth", out var w) && w is double d ? d : 18;
+        foreach (var chapter in s.Chapters.Skip(1))
+        {
+            var x = thumb / 2 + chapter.Start / s.Duration * (width - thumb);
+            var cut = new Rectangle { Width = 2, Height = ChapterMarks.Height, Fill = Transport.Background };
+            Canvas.SetLeft(cut, Math.Round(x) - 1);
+            ChapterMarks.Children.Add(cut);
+        }
+    }
+
+    // ---- The system's media keys ---------------------------------------------------------------
+
+    // Windows sends the play, next and previous keys (and the buttons in its media overlay)
+    // to whichever program has told it what it is playing. A program of this kind tells it
+    // through a media player of the system's own, which plays nothing here: it only lends
+    // its connection to those keys.
+    private MediaPlayer? mediaKeysOwner;
+    private SystemMediaTransportControls? mediaKeys;
+    private string mediaKeysShown = "";
+    private DateTime mediaKeysTimeline = DateTime.MinValue;
+
+    private void SetUpMediaKeys()
+    {
+        try
+        {
+            mediaKeysOwner = new MediaPlayer();
+            mediaKeysOwner.CommandManager.IsEnabled = false;
+            var keys = mediaKeysOwner.SystemMediaTransportControls;
+            keys.IsPlayEnabled = true;
+            keys.IsPauseEnabled = true;
+            keys.IsNextEnabled = true;
+            keys.IsPreviousEnabled = true;
+            keys.ButtonPressed += (_, e) => DispatcherQueue.TryEnqueue(() => OnMediaKey(e.Button));
+            keys.PlaybackPositionChangeRequested += (_, e) =>
+                DispatcherQueue.TryEnqueue(() => player.Send("seek-to " + Number(e.RequestedPlaybackPosition.TotalSeconds)));
+            mediaKeys = keys;
+        }
+        catch (Exception)
+        {
+            // Without them the player plays on; only the keys outside its window do nothing.
+            mediaKeys = null;
+        }
+    }
+
+    private void OnMediaKey(SystemMediaTransportControlsButton button)
+    {
+        if (closed || state.File == null) return;
+        lastPointer = DateTime.UtcNow;
+        switch (button)
+        {
+            case SystemMediaTransportControlsButton.Play when state.Paused || state.Ended:
+            case SystemMediaTransportControlsButton.Pause when !state.Paused:
+                PlayOrPause();
+                break;
+            // In a film a track is a chapter; after the last, the next file of the series.
+            case SystemMediaTransportControlsButton.Next:
+                player.Send("skip-next");
+                break;
+            case SystemMediaTransportControlsButton.Previous:
+                player.Send("skip-previous");
+                break;
+        }
+    }
+
+    private void UpdateMediaKeys(PlayerState s)
+    {
+        if (mediaKeys == null) return;
+        if (s.File == null)
+        {
+            if (mediaKeysShown.Length == 0) return;
+            mediaKeysShown = "";
+            mediaKeys.PlaybackStatus = MediaPlaybackStatus.Stopped;
+            mediaKeys.DisplayUpdater.ClearAll();
+            mediaKeys.DisplayUpdater.Update();
+            return;
+        }
+        mediaKeys.IsEnabled = true;
+        mediaKeys.PlaybackStatus = s.Paused || s.Ended ? MediaPlaybackStatus.Paused : MediaPlaybackStatus.Playing;
+        // The line under the title: the chapter playing, or else the series the file is of.
+        var subtitle = s.Chapter is int n ? ChapterName(s, n)
+            : s.Queue is { Items.Count: > 1 } queue ? queue.Name : "";
+        var shown = s.File + "|" + subtitle;
+        if (shown != mediaKeysShown)
+        {
+            mediaKeysShown = shown;
+            var display = mediaKeys.DisplayUpdater;
+            display.Type = MediaPlaybackType.Video;
+            display.VideoProperties.Title = System.IO.Path.GetFileNameWithoutExtension(s.File);
+            display.VideoProperties.Subtitle = subtitle;
+            display.Update();
+        }
+        // The overlay's own seek bar: kept up to date a few times a minute is enough.
+        if ((DateTime.UtcNow - mediaKeysTimeline).TotalSeconds >= 5 || s.Paused)
+        {
+            mediaKeysTimeline = DateTime.UtcNow;
+            mediaKeys.UpdateTimelineProperties(new SystemMediaTransportControlsTimelineProperties
+            {
+                StartTime = TimeSpan.Zero,
+                MinSeekTime = TimeSpan.Zero,
+                EndTime = TimeSpan.FromSeconds(s.Duration),
+                MaxSeekTime = TimeSpan.FromSeconds(s.Duration),
+                Position = TimeSpan.FromSeconds(s.Position),
+            });
+        }
+    }
+
     private RadioMenuFlyoutItem Choice(string text, string group, bool on, string command)
     {
         var item = new RadioMenuFlyoutItem { Text = text, GroupName = group, IsChecked = on };
@@ -554,15 +703,19 @@ public sealed partial class MainWindow : Window
     }
 }
 
-/// <summary>Shows a position on the seek bar as a time.</summary>
+/// <summary>Shows a position on the seek bar as a time, and the chapter it falls in.</summary>
 internal sealed class ClockConverter : IValueConverter
 {
-    private readonly Func<double> duration;
+    private readonly Func<PlayerState> state;
 
-    public ClockConverter(Func<double> duration) => this.duration = duration;
+    public ClockConverter(Func<PlayerState> state) => this.state = state;
 
-    public object Convert(object value, Type targetType, object parameter, string language) =>
-        Words.Clock(System.Convert.ToDouble(value) * duration());
+    public object Convert(object value, Type targetType, object parameter, string language)
+    {
+        var s = state();
+        var seconds = System.Convert.ToDouble(value) * s.Duration;
+        return s.ChapterAt(seconds) is int n ? $"{Words.Clock(seconds)}  {Words.ChapterName(s, n)}" : Words.Clock(seconds);
+    }
 
     public object ConvertBack(object value, Type targetType, object parameter, string language) =>
         throw new NotSupportedException();

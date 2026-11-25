@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use bitspring_video::chapters;
 use bitspring_video::history::{Memory, ResumeNote};
 use bitspring_video::playback::{Command, Options, Player};
 use bitspring_video::prefs::Preferences;
@@ -281,6 +282,26 @@ impl Host {
         }
     }
 
+    /// To the next chapter or the previous one. `files`: past the last chapter (or the first),
+    /// on to the next file (or the previous), as a track key does.
+    fn chapter(&mut self, step: i32, files: bool) {
+        let Some(status) = self.session.as_ref().map(|s| s.player.status()) else {
+            return;
+        };
+        match chapters::skip(&status.chapters, status.position, step) {
+            chapters::Skip::Seek(at) => self.send(Command::SeekTo(at)),
+            chapters::Skip::File if files => {
+                let index = if step > 0 {
+                    self.queue.next()
+                } else {
+                    self.queue.previous()
+                };
+                self.go(index);
+            }
+            chapters::Skip::File => {}
+        }
+    }
+
     fn play(&mut self, path: &str) {
         self.close();
         self.error = None;
@@ -387,6 +408,8 @@ impl Host {
                 .add(paths.into_iter().map(PathBuf::from).collect()),
             Some(Request::Next) => self.go(self.queue.next()),
             Some(Request::Previous) => self.go(self.queue.previous()),
+            Some(Request::Chapter(step)) => self.chapter(step, false),
+            Some(Request::Skip(step)) => self.chapter(step, true),
             Some(Request::Play(index)) => self.go(Some(index)),
             Some(Request::Remove(index)) => self.queue.remove(index),
             Some(Request::Move(from, to)) => self.queue.move_item(from, to),

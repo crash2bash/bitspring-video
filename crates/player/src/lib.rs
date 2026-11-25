@@ -7,6 +7,7 @@
 // Playback exists where there is a renderer for the system: the Mac and Windows.
 #[cfg(any(target_os = "macos", windows))]
 pub mod app;
+pub mod chapters;
 pub mod history;
 pub mod language;
 pub mod launch;

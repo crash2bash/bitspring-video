@@ -25,6 +25,7 @@ final class InterfaceController {
     private var monitors: [Any] = []
     private var observers: [NSObjectProtocol] = []
     private let decoder = JSONDecoder()
+    private var nowPlaying: NowPlaying?
 
     init(parent: NSView, callback: @escaping CommandCallback, user: UnsafeMutableRawPointer?) {
         view = OverlayView(rootView: PlayerOverlay(model: model))
@@ -73,6 +74,8 @@ final class InterfaceController {
             (visible ? "controls 1" : "controls 0").withCString { callback($0, user) }
         }
 
+        nowPlaying = NowPlaying(model: model)
+
         // A file may already be waiting: the one whose double-click launched the app.
         Arrivals.controller = self
         let waiting = Arrivals.waiting
@@ -96,6 +99,7 @@ final class InterfaceController {
         guard let data = json.data(using: .utf8) else { return }
         do {
             model.update(try decoder.decode(Status.self, from: data))
+            nowPlaying?.update(model.status)
             syncWindowButtons()
         } catch {
             NSLog("BitSpring Video: unreadable state from the player: \(error)")
@@ -123,6 +127,8 @@ final class InterfaceController {
     }
 
     func detach() {
+        nowPlaying?.stop()
+        nowPlaying = nil
         monitors.forEach(NSEvent.removeMonitor)
         monitors.removeAll()
         observers.forEach(NotificationCenter.default.removeObserver)
@@ -145,9 +151,16 @@ final class InterfaceController {
             return false // the system's own shortcuts: quit, close, minimise
         }
         model.reveal()
+        // Option with an arrow, as it jumps a word in text, jumps a chapter here.
+        if flags.contains(.option), event.keyCode == 123 || event.keyCode == 124 {
+            model.send(event.keyCode == 124 ? "chapter-next" : "chapter-previous")
+            return true
+        }
         let step = flags.contains(.shift) ? 60 : 5
         switch event.keyCode {
         case 49: model.send("toggle-pause")                 // space
+        case 121: model.send("chapter-next")                // page down
+        case 116: model.send("chapter-previous")            // page up
         case 123: model.send("seek-by -\(step)")            // left
         case 124: model.send("seek-by \(step)")             // right
         case 126: model.send("volume-by 0.05")              // up

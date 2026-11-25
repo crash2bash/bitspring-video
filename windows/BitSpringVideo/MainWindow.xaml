@@ -186,6 +186,7 @@
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
 
                     <!-- To the file before this one in the folder or the playlist, and the one after:
@@ -220,17 +221,23 @@
                         VerticalAlignment="Center"
                         Margin="4,0,0,0"
                         Foreground="{StaticResource PorcelainBrush}" />
-                    <Slider
-                        x:Name="Seek"
-                        Grid.Column="4"
-                        Minimum="0"
-                        Maximum="1"
-                        StepFrequency="0.001"
-                        SmallChange="0.001"
-                        VerticalAlignment="Center"
-                        Margin="4,0,4,0"
-                        IsTabStop="False"
-                        ValueChanged="OnSeekChanged" />
+                    <Grid Grid.Column="4" Margin="4,0,4,0" VerticalAlignment="Center">
+                        <Slider
+                            x:Name="Seek"
+                            Minimum="0"
+                            Maximum="1"
+                            StepFrequency="0.001"
+                            SmallChange="0.001"
+                            VerticalAlignment="Center"
+                            IsTabStop="False"
+                            ValueChanged="OnSeekChanged" />
+                        <!-- Where each chapter begins: a cut across the track, in the glass's own colour. -->
+                        <Canvas
+                            x:Name="ChapterMarks"
+                            IsHitTestVisible="False"
+                            VerticalAlignment="Center"
+                            Height="12" />
+                    </Grid>
                     <Button x:Name="DurationButton" Grid.Column="5" Style="{StaticResource OnGlass}" Click="OnDurationClick" Padding="4,6">
                         <TextBlock x:Name="DurationText" MinWidth="44" FontSize="15" Foreground="{StaticResource QuietBrush}" />
                     </Button>
@@ -248,13 +255,16 @@
                         IsTabStop="False"
                         IsThumbToolTipEnabled="False"
                         ValueChanged="OnVolumeChanged" />
-                    <Button x:Name="SubtitlesButton" Grid.Column="8" Style="{StaticResource OnGlass}">
+                    <Button x:Name="ChaptersButton" Grid.Column="8" Style="{StaticResource OnGlass}" Visibility="Collapsed">
+                        <FontIcon Glyph="&#xE8A4;" FontSize="15" />
+                    </Button>
+                    <Button x:Name="SubtitlesButton" Grid.Column="9" Style="{StaticResource OnGlass}">
                         <FontIcon x:Name="SubtitlesGlyph" Glyph="&#xE7F0;" FontSize="15" />
                     </Button>
-                    <Button x:Name="SoundButton" Grid.Column="9" Style="{StaticResource OnGlass}">
+                    <Button x:Name="SoundButton" Grid.Column="10" Style="{StaticResource OnGlass}">
                         <FontIcon Glyph="&#xE8D6;" FontSize="15" />
                     </Button>
-                    <Button x:Name="FullscreenButton" Grid.Column="10" Style="{StaticResource OnGlass}" Click="OnFullscreenClick">
+                    <Button x:Name="FullscreenButton" Grid.Column="11" Style="{StaticResource OnGlass}" Click="OnFullscreenClick">
                         <FontIcon x:Name="FullscreenGlyph" Glyph="&#xE740;" FontSize="14" />
                     </Button>
                 </Grid>

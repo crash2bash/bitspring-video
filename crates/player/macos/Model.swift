@@ -74,6 +74,14 @@ struct TrackInfo: Codable, Equatable, Identifiable {
     var pictures: Bool
 }
 
+/// A chapter of the file.
+struct ChapterInfo: Codable, Equatable {
+    /// Seconds from the start.
+    var start: Double
+    /// Empty when the file gives it none.
+    var title: String
+}
+
 struct DisplayInfo: Codable, Equatable {
     var name: String
     /// "on", "off" (supported but switched off in the system), "unsupported".
@@ -162,6 +170,10 @@ struct Status: Codable, Equatable {
     /// The tracks in use, by `TrackInfo.id`; nil for none.
     var audioTrack: Int?
     var subtitleTrack: Int?
+    /// In order; empty when the file has fewer than two.
+    var chapters: [ChapterInfo]
+    /// The chapter playing, by its place in `chapters`.
+    var chapter: Int?
     var display: DisplayInfo
     var settings: SettingsInfo
     var queue: QueueInfo?
@@ -171,6 +183,7 @@ struct Status: Codable, Equatable {
         resumedFrom: nil, volume: 1,
         muted: false, fullscreen: false, mode: "auto", video: nil, signal: nil, sound: nil,
         audioTracks: [], subtitleTracks: [], audioTrack: nil, subtitleTrack: nil,
+        chapters: [], chapter: nil,
         display: DisplayInfo(name: "", hdr: "unsupported", peak: 0, min: nil, headroom: 1, peakKnown: false),
         settings: .standard)
 }
@@ -200,6 +213,22 @@ enum Treatment: Equatable {
 }
 
 extension Status {
+    /// The chapter at this time, by its place in `chapters`. Like the player, a time just
+    /// short of a chapter's start counts as in it.
+    func chapter(at seconds: Double) -> Int? {
+        chapters.lastIndex { $0.start <= seconds + 0.4 }
+    }
+
+    /// What to call the n-th chapter: its own title, with the plain numbered ones a file
+    /// often carries ("Chapter 03") said in the interface's language.
+    func chapterName(_ n: Int) -> String {
+        let title = chapters[n].title.trimmingCharacters(in: .whitespaces)
+        if let match = title.wholeMatch(of: #/(?i)chapter\s*0*(\d+)/#) {
+            return L("Chapter \(match.1)", "Глава \(match.1)")
+        }
+        return title.isEmpty ? L("Chapter \(n + 1)", "Глава \(n + 1)") : title
+    }
+
     var isHdrSource: Bool { video.map { $0.transfer != "SDR" } ?? false }
 
     /// Brightest level the content claims, in cd/m².

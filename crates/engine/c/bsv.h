@@ -114,6 +114,15 @@ int bsv_source_subtitle_index(const bsv_source *s);
 // Read another stream from now on. The matching decoder must be opened again afterwards.
 int bsv_source_select_audio(bsv_source *s, int index);   // -1 for none
 int bsv_source_select_subtitle(bsv_source *s, int index); // -1 for none
+// A chapter of the file, on the same timeline as everything else: seconds from the start.
+struct bsv_chapter {
+    double start, end;      // end is 0 when the file does not say
+    char title[128];        // empty when the chapter has none
+};
+// The chapters as the file lists them; returns 0 when there is no n-th (0-based).
+int bsv_source_chapter_count(const bsv_source *s);
+int bsv_source_chapter(const bsv_source *s, int n, struct bsv_chapter *out);
+
 // The n-th font shipped inside the file; pointers are valid while the source is open.
 int bsv_source_font(const bsv_source *s, int n, const char **name, const void **data, int *len);
 

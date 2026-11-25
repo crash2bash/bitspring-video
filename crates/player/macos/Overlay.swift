@@ -784,7 +784,8 @@ private struct Transport: View {
             Track(
                 fraction: status.duration > 0 ? model.shownPosition / status.duration : 0,
                 fill: live,
-                label: { clock($0 * status.duration) },
+                label: { seekLabel(at: $0 * status.duration) },
+                marks: status.duration > 0 ? status.chapters.dropFirst().map { $0.start / status.duration } : [],
                 onChange: { model.seek(to: $0 * status.duration) })
 
             Button {
@@ -817,6 +818,31 @@ private struct Transport: View {
                     label: nil,
                     onChange: { model.send("volume \($0)") })
                     .frame(width: 68)
+            }
+
+            if !status.chapters.isEmpty {
+                Menu {
+                    Section(L("Chapters", "Главы")) {
+                        ForEach(status.chapters.indices, id: \.self) { n in
+                            // The one playing is ticked; each says where it begins.
+                            Toggle(isOn: chapterChoice(n)) {
+                                Text(status.chapterName(n))
+                                Text(clock(status.chapters[n].start))
+                            }
+                        }
+                    }
+                } label: {
+                    Image(systemName: "rectangle.split.3x1")
+                        .font(.system(size: 14, weight: .medium))
+                        .frame(width: 30, height: 40)
+                        .contentShape(Rectangle())
+                }
+                .menuStyle(.button)
+                .buttonStyle(.plain)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help(L("Chapters (Page Up, Page Down)", "Главы (Page Up, Page Down)"))
+                .accessibilityLabel(L("Chapters", "Главы"))
             }
 
             if !status.subtitleTracks.isEmpty {
@@ -901,6 +927,19 @@ private struct Transport: View {
         .accessibilityLabel(name)
     }
 
+    /// The time under the pointer on the seek bar, and the chapter it falls in.
+    private func seekLabel(at seconds: Double) -> Text {
+        let time = Text(clock(seconds))
+        guard let n = status.chapter(at: seconds) else { return time }
+        return time + Text("  ") + Text(status.chapterName(n)).foregroundStyle(Color.quiet)
+    }
+
+    private func chapterChoice(_ n: Int) -> Binding<Bool> {
+        Binding(
+            get: { status.chapter == n },
+            set: { _ in model.seek(to: status.chapters[n].start) })
+    }
+
     private var subtitleChoice: Binding<Int> {
         Binding(
             get: { status.subtitleTrack ?? -1 },
@@ -926,10 +965,12 @@ struct Track: View {
     let fraction: Double
     let fill: Color
     /// Text for the bubble shown while pointing at the track, given a position from 0 to 1.
-    let label: ((Double) -> String)?
+    let label: ((Double) -> Text)?
     var height: CGFloat = 40
     /// Where the filled part starts, 0 to 1: the left end, or the zero of a scale that runs both ways.
     var origin: Double = 0
+    /// Places, 0 to 1, where the track is cut: the starts of chapters on the seek bar.
+    var marks: [Double] = []
     let onChange: (Double) -> Void
 
     @State private var hover: CGFloat?
@@ -944,11 +985,24 @@ struct Track: View {
             let thickness: CGFloat = active ? 6 : 4
 
             ZStack(alignment: .leading) {
-                Capsule().fill(Color.black.opacity(0.28)).frame(height: thickness)
-                Capsule().fill(Color.porcelain.opacity(0.3)).frame(height: thickness)
-                Capsule().fill(fill)
-                    .frame(width: max(width * abs(shown - origin), thickness), height: thickness)
-                    .offset(x: width * min(shown, origin))
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.black.opacity(0.28)).frame(height: thickness)
+                    Capsule().fill(Color.porcelain.opacity(0.3)).frame(height: thickness)
+                    Capsule().fill(fill)
+                        .frame(width: max(width * abs(shown - origin), thickness), height: thickness)
+                        .offset(x: width * min(shown, origin))
+                }
+                // Each mark is a gap the glass shows through, filled part and all.
+                .mask {
+                    Canvas { context, size in
+                        context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(.white))
+                        context.blendMode = .clear
+                        for mark in marks where mark > 0 && mark < 1 {
+                            let x = (size.width * mark).rounded()
+                            context.fill(Path(CGRect(x: x - 1, y: 0, width: 2, height: size.height)), with: .color(.white))
+                        }
+                    }
+                }
                 Circle()
                     .fill(Color.porcelain)
                     .frame(width: 13, height: 13)
@@ -983,7 +1037,7 @@ struct Track: View {
             }
             .overlay(alignment: .topLeading) {
                 if let label, let at = drag.map({ CGFloat($0) * width }) ?? hover {
-                    Text(label(Double(min(max(at / width, 0), 1))))
+                    label(Double(min(max(at / width, 0), 1)))
                         .font(.figures(13))
                         .padding(.horizontal, 10)
                         .frame(height: 26)

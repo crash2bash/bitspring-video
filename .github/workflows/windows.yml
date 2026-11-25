@@ -97,18 +97,23 @@ jobs:
 
       - name: A clip to try it on
         run: |
-          # Tagged HDR10, with sound and a subtitle track.
+          # Tagged HDR10, with sound, a subtitle track and three chapters.
           mkdir -p target/clip
           cd target/clip
           printf '1\n00:00:00,200 --> 00:00:30,000\nA subtitle.\n\n' > clip.srt
+          printf ';FFMETADATA1\n' > chapters.txt
+          for c in "0 10000 Opening" "10000 20000 Chapter 02" "20000 30000 Credits"; do
+            set -- $c
+            printf '[CHAPTER]\nTIMEBASE=1/1000\nSTART=%s\nEND=%s\ntitle=%s\n' "$1" "$2" "${*:3}" >> chapters.txt
+          done
           ffmpeg -hide_banner -loglevel error -y \
             -f lavfi -i "testsrc2=size=1280x720:rate=24:duration=30" \
             -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=30" \
-            -i clip.srt -map 0:v -map 1:a -map 2:s \
+            -i clip.srt -i chapters.txt -map 0:v -map 1:a -map 2:s -map_chapters 3 \
             -vf "format=yuv420p10le" -c:v libx265 -preset ultrafast \
             -x265-params "log-level=error:hdr-opt=1:repeat-headers=1:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc:master-display=G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,50):max-cll=1000,400" \
             -c:a aac -c:s srt -metadata:s:a:0 language=eng -metadata:s:s:0 language=eng clip.mkv
-          rm clip.srt
+          rm clip.srt chapters.txt
           # Two short episodes of a series, the first with a subtitle file in a folder below.
           mkdir -p series/Subs
           for n in 01 02; do
@@ -135,12 +140,16 @@ jobs:
           # than five compiling its shaders before the first frame is through.
           echo "::group::Playing for fifteen seconds"
           timeout 120 ./bitspring-video.exe --verbose --no-sound --settings settings.json \
-            --script "1:subs 2,15:quit" ../../clip/clip.mkv 2>&1 | tee run.log
+            --script "1:subs 2,3:chapter-next,4:pause,15:quit" ../../clip/clip.mkv 2>&1 | tee run.log
           echo "::endgroup::"
 
           # A "Signal" line is printed once a frame has gone through the renderer to the window.
-          grep -E '^(Video|Signal|Clock)' run.log
+          grep -E '^(Video|Signal|Clock|Chapters|Script)' run.log
           grep -q '^Signal:' run.log
+          # The clip's three chapters are read, and the next one is gone to: paused just
+          # after the jump, the clip stands at its second chapter's start, ten seconds in.
+          grep -q '^Chapters: 3 ' run.log
+          grep '^Script: *15' run.log | grep -qE 'position 1[01]\.'
           rm -f run.log settings.json history.json
 
       - uses: actions/upload-artifact@v4

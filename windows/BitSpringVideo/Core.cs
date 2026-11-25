@@ -148,12 +148,26 @@ internal sealed class PlayerState
     public List<TrackInfo> SubtitleTracks = new();
     public int? AudioTrack;
     public int? SubtitleTrack;
+    /// <summary>In order; empty when the file has fewer than two.</summary>
+    public List<ChapterInfo> Chapters = new();
+    /// <summary>The chapter playing, by its place in Chapters.</summary>
+    public int? Chapter;
     public DisplayInfo Display = new();
     public SettingsInfo Settings = new();
     /// <summary>What plays after what: the folder's videos, or a playlist.</summary>
     public QueueInfo? Queue;
 
     public bool IsPlaying => File != null && !Paused && !Ended;
+
+    /// <summary>
+    /// The chapter at this time, by its place in Chapters. Like the player, a time just short
+    /// of a chapter's start counts as in it.
+    /// </summary>
+    public int? ChapterAt(double seconds)
+    {
+        var at = Chapters.FindLastIndex(c => c.Start <= seconds + 0.4);
+        return at < 0 ? null : at;
+    }
     public bool IsHdrSource => Video != null && Video.Transfer != "SDR";
 
     /// <summary>Brightest level the content claims, cd/m².</summary>
@@ -265,6 +279,14 @@ internal sealed class TrackInfo
     public bool Forced;
     public bool HearingImpaired;
     public bool Pictures;
+}
+
+internal sealed class ChapterInfo
+{
+    /// <summary>Seconds from the start.</summary>
+    public double Start;
+    /// <summary>Empty when the file gives it none.</summary>
+    public string Title = "";
 }
 
 internal sealed class DisplayInfo

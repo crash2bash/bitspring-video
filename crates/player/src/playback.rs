@@ -29,7 +29,7 @@ use bsv_display::policy::{HdrMode, Output, plan};
 use crate::language;
 use crate::sidecars::{self, Sidecar};
 use bsv_engine::{
-    AudioDecoder, AudioInfo, Between, Decoded, Frame, Gpu, Interpolation, Interpolator, MediaInfo,
+    AudioDecoder, AudioInfo, Between, Chapter, Decoded, Frame, Gpu, Interpolation, Interpolator, MediaInfo,
     Packet, Pull, Quality, Read, RenderStats, RenderStatus, Source, SubtitleDecoder, SubtitleEvent,
     SubtitleKind, Track, TrackKind, Upscaler, VideoDecoder,
 };
@@ -153,6 +153,8 @@ pub struct Status {
     pub sound: Option<Sound>,
     /// Every sound and subtitle track in the file.
     pub tracks: Vec<Track>,
+    /// The file's chapters, in order; empty when it has fewer than two.
+    pub chapters: Vec<Chapter>,
     pub audio_track: Option<i32>,
     pub subtitle_track: Option<i32>,
     /// For each sound track that is a file next to the video, its place against the video.
@@ -1563,6 +1565,8 @@ fn render_loop(
     let mut info = decoder.info();
     let duration = info.duration;
 
+    let chapters = crate::chapters::tidy(source.chapters(), duration);
+    status.lock().unwrap().chapters = chapters;
     let mut tracks = source.tracks();
     for (name, data) in source.fonts() {
         gpu.add_font(&name, &data);

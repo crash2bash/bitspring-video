@@ -43,6 +43,7 @@ struct Session {
     file_name: String,
     /// What was last printed, so each line appears only when it changes.
     printed_media: String,
+    printed_chapters: bool,
     printed_sound: String,
     printed_path: String,
     printed_layer: String,
@@ -247,6 +248,26 @@ impl Running {
         }
     }
 
+    /// To the next chapter or the previous one. `files`: past the last chapter (or the first),
+    /// on to the next file (or the previous), as a track key does.
+    fn chapter(&mut self, step: i32, files: bool, settings: &Settings) {
+        let Some(status) = self.session.as_ref().map(|s| s.player.status()) else {
+            return;
+        };
+        match crate::chapters::skip(&status.chapters, status.position, step) {
+            crate::chapters::Skip::Seek(at) => self.send(Command::SeekTo(at)),
+            crate::chapters::Skip::File if files => {
+                let index = if step > 0 {
+                    self.queue.next()
+                } else {
+                    self.queue.previous()
+                };
+                self.go(index, settings);
+            }
+            crate::chapters::Skip::File => {}
+        }
+    }
+
     /// Play `path`, replacing whatever is playing. `start` is where to begin, in seconds,
     /// when the command line says; otherwise where the file was stopped the last time.
     fn play(&mut self, path: &str, settings: &Settings, start: Option<f64>) {
@@ -318,6 +339,7 @@ impl Running {
             player,
             file_name,
             printed_media: String::new(),
+            printed_chapters: false,
             printed_sound: String::new(),
             printed_path: String::new(),
             printed_layer: String::new(),
@@ -486,6 +508,8 @@ impl Running {
                 .add(paths.into_iter().map(PathBuf::from).collect()),
             Request::Next => self.go(self.queue.next(), settings),
             Request::Previous => self.go(self.queue.previous(), settings),
+            Request::Chapter(step) => self.chapter(step, false, settings),
+            Request::Skip(step) => self.chapter(step, true, settings),
             Request::Play(index) => self.go(Some(index), settings),
             Request::Remove(index) => self.queue.remove(index),
             Request::Move(from, to) => self.queue.move_item(from, to),
@@ -564,6 +588,17 @@ impl Running {
                     (Some(s), None) => report::sound_path(&s.track, &s.device),
                     (None, _) => "none (the picture runs on the system clock)".to_string(),
                 };
+                if !status.chapters.is_empty() && !session.printed_chapters {
+                    session.printed_chapters = true;
+                    let first = status.chapters.iter().take(3).map(report::chapter);
+                    let more = status.chapters.len().saturating_sub(3);
+                    let more = if more > 0 { format!(", and {more} more") } else { String::new() };
+                    println!(
+                        "Chapters: {} ({}{more})",
+                        status.chapters.len(),
+                        first.collect::<Vec<_>>().join(", ")
+                    );
+                }
                 if sound != session.printed_sound {
                     println!("Sound:   {sound}");
                     session.printed_sound = sound;
@@ -850,7 +885,11 @@ impl App {
                 a if a.starts_with("save ") => {
                     r.handle(Request::Save(a[5..].trim().to_string()), &self.settings)
                 }
-                other => eprintln!("[warn] unknown script command \"{other}\""),
+                // Anything the interface can say: "chapter-next", "skip-previous" ...
+                other => match ui::parse(other) {
+                    Some(request) => r.handle(request, &self.settings),
+                    None => eprintln!("[warn] unknown script command \"{other}\""),
+                },
             }
         }
     }
@@ -983,6 +1022,11 @@ impl ApplicationHandler for App {
                     Key::Named(NamedKey::ArrowDown) => {
                         Some(Request::Player(Command::VolumeBy(-0.05)))
                     }
+                    Key::Named(NamedKey::PageDown) => Some(Request::Chapter(1)),
+                    Key::Named(NamedKey::PageUp) => Some(Request::Chapter(-1)),
+                    Key::Named(NamedKey::MediaPlayPause) => Some(Request::Player(Command::TogglePause)),
+                    Key::Named(NamedKey::MediaTrackNext) => Some(Request::Skip(1)),
+                    Key::Named(NamedKey::MediaTrackPrevious) => Some(Request::Skip(-1)),
                     Key::Named(NamedKey::Enter) if !event.repeat => Some(Request::ToggleFullscreen),
                     Key::Named(NamedKey::Escape) => Some(Request::ExitFullscreen),
                     Key::Character(c) if !event.repeat => match c.to_lowercase().as_str() {

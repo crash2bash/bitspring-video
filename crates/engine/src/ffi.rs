@@ -62,6 +62,13 @@ pub struct bsv_track {
 }
 
 #[repr(C)]
+pub struct bsv_chapter {
+    pub start: c_double,
+    pub end: c_double,
+    pub title: [c_char; 128],
+}
+
+#[repr(C)]
 pub struct bsv_packet {
     pub avpacket: *mut c_void,
     pub kind: c_int,
@@ -178,6 +185,8 @@ unsafe extern "C" {
 
     pub fn bsv_source_track_count(s: *const bsv_source) -> c_int;
     pub fn bsv_source_track(s: *const bsv_source, n: c_int, out: *mut bsv_track) -> c_int;
+    pub fn bsv_source_chapter_count(s: *const bsv_source) -> c_int;
+    pub fn bsv_source_chapter(s: *const bsv_source, n: c_int, out: *mut bsv_chapter) -> c_int;
     pub fn bsv_source_audio_index(s: *const bsv_source) -> c_int;
     pub fn bsv_source_subtitle_index(s: *const bsv_source) -> c_int;
     pub fn bsv_source_select_audio(s: *mut bsv_source, index: c_int) -> c_int;

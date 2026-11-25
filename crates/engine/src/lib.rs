@@ -405,6 +405,16 @@ pub struct Track {
     pub bitmap: bool,
 }
 
+/// A chapter of the file, in seconds on the player's timeline.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Chapter {
+    pub start: f64,
+    /// `None` when the file does not say where the chapter ends.
+    pub end: Option<f64>,
+    /// Empty when the chapter has no title.
+    pub title: String,
+}
+
 /// The open file: hands out packets in the order they are stored.
 pub struct Source {
     ptr: NonNull<ffi::bsv_source>,
@@ -506,6 +516,25 @@ impl Source {
                     forced: c.forced != 0,
                     hearing_impaired: c.hearing_impaired != 0,
                     bitmap: c.bitmap != 0,
+                })
+            })
+            .collect()
+    }
+
+    /// The chapters as the file lists them, in its order.
+    pub fn chapters(&self) -> Vec<Chapter> {
+        // SAFETY: plain calls on an owned source; `c` is a valid out-pointer.
+        let count = unsafe { ffi::bsv_source_chapter_count(self.ptr.as_ptr()) };
+        (0..count)
+            .filter_map(|n| {
+                let mut c: ffi::bsv_chapter = unsafe { std::mem::zeroed() };
+                if unsafe { ffi::bsv_source_chapter(self.ptr.as_ptr(), n, &mut c) } == 0 {
+                    return None;
+                }
+                Some(Chapter {
+                    start: c.start,
+                    end: (c.end > c.start).then_some(c.end),
+                    title: text(&c.title),
                 })
             })
             .collect()

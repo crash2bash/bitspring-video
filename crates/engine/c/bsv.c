@@ -420,6 +420,30 @@ int bsv_source_track(const bsv_source *s, int n, struct bsv_track *out)
     return 0;
 }
 
+// ---- Chapters -------------------------------------------------------------------------------
+
+int bsv_source_chapter_count(const bsv_source *s)
+{
+    return (int) s->fmt->nb_chapters;
+}
+
+int bsv_source_chapter(const bsv_source *s, int n, struct bsv_chapter *out)
+{
+    memset(out, 0, sizeof(*out));
+    if (n < 0 || (unsigned) n >= s->fmt->nb_chapters)
+        return 0;
+    const AVChapter *c = s->fmt->chapters[n];
+    double unit = av_q2d(c->time_base);
+    // Chapters count from the file's own zero; everything the player shows counts from `origin`.
+    out->start = c->start * unit - s->origin;
+    if (c->end > c->start && c->end != AV_NOPTS_VALUE)
+        out->end = c->end * unit - s->origin;
+    const AVDictionaryEntry *entry = av_dict_get(c->metadata, "title", NULL, 0);
+    if (entry)
+        snprintf(out->title, sizeof(out->title), "%s", entry->value);
+    return 1;
+}
+
 int bsv_source_audio_index(const bsv_source *s)
 {
     return s->audio ? s->audio->index : -1;

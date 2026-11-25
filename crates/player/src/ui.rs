@@ -72,6 +72,11 @@ pub enum Request {
     /// The file after this one in the list, or the one before.
     Next,
     Previous,
+    /// The next chapter (1) or the previous one (-1), within the file.
+    Chapter(i32),
+    /// What a "next track" or "previous track" key means for a film: the next chapter, and
+    /// after the last one the next file; the same backwards.
+    Skip(i32),
     /// Play the file at this place in the list.
     Play(usize),
     /// Take the file at this place out of the list.
@@ -126,6 +131,10 @@ pub fn parse(text: &str) -> Option<Request> {
         "queue-add" => Request::Add(paths()?),
         "next" => Request::Next,
         "previous" => Request::Previous,
+        "chapter-next" => Request::Chapter(1),
+        "chapter-previous" => Request::Chapter(-1),
+        "skip-next" => Request::Skip(1),
+        "skip-previous" => Request::Skip(-1),
         "queue-play" => Request::Play(place()?),
         "queue-remove" => Request::Remove(place()?),
         "queue-move" => {
@@ -240,6 +249,9 @@ pub struct State {
     subtitle_tracks: Vec<TrackState>,
     audio_track: Option<i32>,
     subtitle_track: Option<i32>,
+    chapters: Vec<ChapterState>,
+    /// The chapter playing, by its place in `chapters`.
+    chapter: Option<usize>,
     display: DisplayState,
     settings: SettingsState,
     /// What plays after what: the folder's videos, or a playlist. `None` when nothing is open.
@@ -268,6 +280,14 @@ struct SettingsState {
     audio_language: String,
     audio_delay: f32,
     auto_next: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ChapterState {
+    start: f64,
+    /// Empty when the file gives the chapter no title.
+    title: String,
 }
 
 #[derive(Serialize)]
@@ -483,6 +503,8 @@ impl State {
                 subtitle_tracks: Vec::new(),
                 audio_track: None,
                 subtitle_track: None,
+                chapters: Vec::new(),
+                chapter: None,
                 display: display_state,
                 settings,
                 queue: None,
@@ -580,6 +602,15 @@ impl State {
             subtitle_tracks: track_states(&status.tracks, bsv_engine::TrackKind::Subtitle),
             audio_track: status.audio_track,
             subtitle_track: status.subtitle_track,
+            chapters: status
+                .chapters
+                .iter()
+                .map(|c| ChapterState {
+                    start: c.start,
+                    title: c.title.clone(),
+                })
+                .collect(),
+            chapter: crate::chapters::current(&status.chapters, status.position),
             display: display_state,
             settings,
             queue: queue.cloned(),
@@ -602,5 +633,7 @@ mod tests {
         assert!(matches!(parse("queue-play 2"), Some(Request::Play(2))));
         assert!(parse("queue-play two").is_none());
         assert!(matches!(parse("next"), Some(Request::Next)));
+        assert!(matches!(parse("chapter-previous"), Some(Request::Chapter(-1))));
+        assert!(matches!(parse("skip-next"), Some(Request::Skip(1))));
     }
 }

@@ -34,6 +34,18 @@ internal static class Words
     /// <summary>A number for the player to read back: always with a point, whatever the system's habits.</summary>
     public static string Number(double value) => value.ToString("0.###", Plain);
 
+    /// <summary>
+    /// What to call the n-th chapter: its own title, with the plain numbered ones a file often
+    /// carries ("Chapter 03") said in the interface's language.
+    /// </summary>
+    public static string ChapterName(PlayerState s, int n)
+    {
+        var title = s.Chapters[n].Title.Trim();
+        var numbered = Regex.Match(title, @"^chapter\s*0*(\d+)$", RegexOptions.IgnoreCase);
+        if (numbered.Success) return L($"Chapter {numbered.Groups[1].Value}", $"Глава {numbered.Groups[1].Value}");
+        return title.Length == 0 ? L($"Chapter {n + 1}", $"Глава {n + 1}") : title;
+    }
+
     public static string Kilohertz(int rate) => Trimmed(rate / 1000.0, 1) + L(" kHz", " кГц");
 
     /// <summary>Codec names the way they are written on a box, not the way FFmpeg spells them.</summary>
